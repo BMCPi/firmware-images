@@ -42,8 +42,8 @@
 		__overlay__ {
 			thermal-zones {
 				cpu-thermal {
-					polling-delay-passive = <2000>;
-					polling-delay = <1000>;
+					polling-delay-passive = <1000>;
+					polling-delay = <2000>;
 					/* BCM2712 calibration: temp(mC) = -550 * raw + 450000 */
 					coefficients = <(-550) 450000>;
 					thermal-sensors = <&thermal>;
