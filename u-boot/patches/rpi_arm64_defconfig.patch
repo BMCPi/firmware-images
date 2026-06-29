@@ -1432,8 +1432,60 @@ index 9ac9d6768ca..4ce9b2e71c7 100644
  
 -boot_targets=mmc usb pxe dhcp
 +boot_targets=mmc usb nvme dhcp
+diff --git a/common/usb_storage.c b/common/usb_storage.c
+index ac331f1c1b0..fe1b5b6bf64 100644
+--- a/common/usb_storage.c
++++ b/common/usb_storage.c
+@@ -189,6 +189,7 @@ static unsigned int usb_get_max_lun(struct us_data *us)
+ static int usb_stor_probe_device(struct usb_device *udev)
+ {
+ 	int lun, max_lun;
++	unsigned int stor_ifnum;
+ 
+ #if CONFIG_IS_ENABLED(BLK)
+ 	struct us_data *data;
+@@ -208,7 +209,11 @@ static int usb_stor_probe_device(struct usb_device *udev)
+ 	 * device.
+ 	 */
+ 	data = dev_get_plat(udev->dev);
+-	if (!usb_storage_probe(udev, 0, data))
++	for (stor_ifnum = 0; stor_ifnum < udev->config.no_of_if; stor_ifnum++) {
++		if (usb_storage_probe(udev, stor_ifnum, data))
++			break;
++	}
++	if (stor_ifnum >= udev->config.no_of_if)
+ 		return 0;
+ 	max_lun = usb_get_max_lun(data);
+ 	for (lun = 0; lun <= max_lun; lun++) {
+@@ -263,7 +268,11 @@ static int usb_stor_probe_device(struct usb_device *udev)
+ 		return -ENOSPC;
+ 	}
+ 
+-	if (!usb_storage_probe(udev, 0, &usb_stor[usb_max_devs]))
++	for (stor_ifnum = 0; stor_ifnum < udev->config.no_of_if; stor_ifnum++) {
++		if (usb_storage_probe(udev, stor_ifnum, &usb_stor[usb_max_devs]))
++			break;
++	}
++	if (stor_ifnum >= udev->config.no_of_if)
+ 		return 0;
+ 
+ 	/*
+@@ -1319,8 +1328,11 @@ int usb_storage_probe(struct usb_device *dev, unsigned int ifnum,
+ 	/* let's examine the device now */
+ 	iface = &dev->config.if_desc[ifnum];
+ 
+-	if (dev->descriptor.bDeviceClass != 0 ||
+-			iface->desc.bInterfaceClass != USB_CLASS_MASS_STORAGE ||
++	/*
++	 * Composite devices (bDeviceClass = 0xEF / IAD) define their class at
++	 * the interface level, so check only the interface class here.
++	 */
++	if (iface->desc.bInterfaceClass != USB_CLASS_MASS_STORAGE ||
+ 			iface->desc.bInterfaceSubClass < US_SC_MIN ||
+ 			iface->desc.bInterfaceSubClass > US_SC_MAX) {
+ 		debug("Not mass storage\n");
 diff --git a/configs/rpi_arm64_defconfig b/configs/rpi_arm64_defconfig
-index 69e8e72c5d7..b83cecde183 100644
+index 69e8e72c5d7..eb868d0f172 100644
 --- a/configs/rpi_arm64_defconfig
 +++ b/configs/rpi_arm64_defconfig
 @@ -4,7 +4,7 @@ CONFIG_ARCH_BCM283X=y
@@ -1483,7 +1535,7 @@ index 69e8e72c5d7..b83cecde183 100644
  CONFIG_SYS_DFU_DATA_BUF_SIZE=0x100000
  CONFIG_SYS_DFU_MAX_FILE_SIZE=0x200000
  CONFIG_BCM2835_GPIO=y
-@@ -65,3 +76,49 @@ CONFIG_VIDEO_BCM2835=y
+@@ -65,3 +76,52 @@ CONFIG_VIDEO_BCM2835=y
  CONFIG_CONSOLE_SCROLL_LINES=10
  CONFIG_PHYS_TO_BUS=y
  # CONFIG_HEXDUMP is not set
@@ -1503,6 +1555,9 @@ index 69e8e72c5d7..b83cecde183 100644
 +CONFIG_CMD_USB_MASS_STORAGE=y
 +CONFIG_USB_DWC3=y
 +CONFIG_USB_XHCI_DWC3=y
++CONFIG_USB_GADGET=y
++CONFIG_USB_ETHER=y
++CONFIG_USB_ETH_RNDIS=y
 +CONFIG_BLKMAP=y
 +# Boot config
 +CONFIG_BOOTSTD=y
@@ -5408,3 +5463,23 @@ index cfff275daba..6bc3abe4a93 100644
  #define PCI_VENDOR_ID_TEHUTI		0x1fc9
  #define PCI_DEVICE_ID_TEHUTI_3009	0x3009
  #define PCI_DEVICE_ID_TEHUTI_3010	0x3010
+diff --git a/include/usb.h b/include/usb.h
+index be37ed272e1..cf68e8c82c6 100644
+--- a/include/usb.h
++++ b/include/usb.h
+@@ -50,10 +50,12 @@ extern bool usb_started; /* flag for the started/stopped USB status */
+ #define USB_TIMEOUT_MS(pipe) (usb_pipebulk(pipe) ? 5000 : 1000)
+ 
+ /*
+- * The xhcd hcd driver prepares only a limited number interfaces / endpoints.
+- * Define this limit so that drivers do not exceed it.
++ * The xHCI driver programs endpoint contexts for up to this many interfaces
++ * per device.  Must be at least USB_MAXINTERFACES to support composite
++ * gadgets (e.g. mass-storage + HID + RNDIS) where the storage interface is
++ * not at index 0.
+  */
+-#define USB_MAX_ACTIVE_INTERFACES	2
++#define USB_MAX_ACTIVE_INTERFACES	USB_MAXINTERFACES
+ 
+ /* device request (setup) */
+ struct devrequest {
