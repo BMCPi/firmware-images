@@ -11,6 +11,10 @@ on:
         description: "EDK2 stable tag (e.g. edk2-stable202502)"
         required: false
         type: string
+      edk2_platforms:
+        description: "EDK2 Platforms stable tag (e.g. edk2-platforms-stable202502)"
+        required: false
+        type: string
       optee:
         description: "OP-TEE OS version tag (e.g. 4.5.0)"
         required: false
@@ -38,6 +42,7 @@ jobs:
       release: ${{ steps.version.outputs.release }}
       uboot: ${{ steps.version.outputs.uboot }}
       edk2: ${{ steps.version.outputs.edk2 }}
+      edk2_platforms: ${{ steps.version.outputs.edk2_platforms }}
       optee: ${{ steps.version.outputs.optee }}
       firmware: ${{ steps.version.outputs.firmware }}
       linux: ${{ steps.version.outputs.linux }}
@@ -58,6 +63,7 @@ jobs:
           # Parse values from version file
           FILE_UBOOT_VER=$(grep '^uboot ' "$VERSION_FILE" | awk '{print $2}')
           FILE_EDK2_VER=$(grep '^edk2 ' "$VERSION_FILE" | awk '{print $2}')
+          FILE_EDK2_PLATFORMS_VER=$(grep '^edk2-platforms ' "$VERSION_FILE" | awk '{print $2}')
           FILE_OPTEE_VER=$(grep '^optee ' "$VERSION_FILE" | awk '{print $2}')
           FILE_FIRMWARE_VER=$(grep '^firmware ' "$VERSION_FILE" | awk '{print $2}')
           FILE_LINUX_VER=$(grep '^linux ' "$VERSION_FILE" | awk '{print $2}')
@@ -69,6 +75,9 @@ jobs:
 
           edk2="${{ inputs.edk2 }}"
           edk2="${edk2:-$FILE_EDK2_VER}"
+
+          edk2_platforms="${{ inputs.edk2_platforms }}"
+          edk2_platforms="${edk2_platforms:-$FILE_EDK2_PLATFORMS_VER}"
 
           optee="${{ inputs.optee }}"
           optee="${optee:-$FILE_OPTEE_VER}"
@@ -86,6 +95,7 @@ jobs:
 
           echo "uboot=$uboot" >> $GITHUB_OUTPUT
           echo "edk2=$edk2" >> $GITHUB_OUTPUT
+          echo "edk2_platforms=$edk2_platforms" >> $GITHUB_OUTPUT
           echo "optee=$optee" >> $GITHUB_OUTPUT
           echo "firmware=$firmware" >> $GITHUB_OUTPUT
           echo "linux=$linux" >> $GITHUB_OUTPUT
@@ -158,24 +168,59 @@ jobs:
           packages: acpica-tools gcc-aarch64-linux-gnu uuid-dev
           version: 1.4
 
+      - name: Cache EDK2 source and BaseTools
+        id: cache-edk2
+        uses: actions/cache@v4
+        with:
+          # Whole edk2 tree: source + required submodules + built BaseTools
+          # (make -C edk2/BaseTools writes into this dir) + generated Conf/.
+          # BaseTools binaries are host-specific, so key on runner os/arch.
+          path: edk2
+          key: edk2-${{ runner.os }}-${{ runner.arch }}-${{ needs.determine-version.outputs.edk2 }}-v4
+
       - name: Checkout EDK2
+        if: steps.cache-edk2.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: tianocore/edk2
           fetch-depth: 1
           path: edk2
           ref: ${{ needs.determine-version.outputs.edk2 }}
-          submodules: recursive
+          submodules: false
+
+      - name: Fetch required EDK2 submodules
+        if: steps.cache-edk2.outputs.cache-hit != 'true'
+        working-directory: edk2
+        run: |
+          # EDK2 validates [Includes] paths in every parsed .dec up front, so the
+          # submodule dirs they reference must exist even if barely used. The DSC
+          # pulls modules from MdePkg, MdeModulePkg, CryptoPkg and SecurityPkg, so
+          # their submodule include dirs are all required:
+          #   MdePkg.dec       -> mipisyst
+          #   MdeModulePkg.dec -> brotli      (also compiled by BaseTools)
+          #   CryptoPkg.dec    -> openssl + mbedtls
+          #   SecurityPkg.dec  -> libspdm
+          # The DSC does not reference RedfishPkg, so jansson is not needed. The
+          # remaining submodules (googletest, oniguruma, libfdt, cmocka, subhook,
+          # TPM) are not referenced either, which still cuts most of the clone time.
+          git submodule update --init --depth 1 \
+            CryptoPkg/Library/MbedTlsLib/mbedtls \
+            CryptoPkg/Library/OpensslLib/openssl \
+            MdePkg/Library/MipiSysTLib/mipisyst \
+            MdeModulePkg/Library/BrotliCustomDecompressLib/brotli \
+            BaseTools/Source/C/BrotliCompress/brotli \
+            SecurityPkg/DeviceSecurity/SpdmLib/libspdm
 
       - name: Checkout edk2-platforms
         uses: actions/checkout@v4
         with:
           repository: tianocore/edk2-platforms
           path: edk2-platforms
-          ref: master
+          ref: ${{ needs.determine-version.outputs.edk2_platforms }}
           fetch-depth: 1
 
       - name: Set up EDK2
+        if: steps.cache-edk2.outputs.cache-hit != 'true'
         run: make -C edk2/BaseTools
 
       - name: Build EDK2 StandaloneMM
@@ -186,6 +231,24 @@ jobs:
           export PACKAGES_PATH=$WORKSPACE/edk2:$WORKSPACE/edk2-platforms
           export ACTIVE_PLATFORM="edk2-platforms/Platform/StandaloneMm/PlatformStandaloneMmPkg/PlatformStandaloneMmRpmb.dsc"
           source edk2/edksetup.sh
+
+          # mbedtls's aarch64 inline asm in constant_time.c is rejected by GCC when
+          # inlined under EDK2's codegen flags (fails with or without LTO, in every
+          # mbedtls 3.5-3.6). Disabling MBEDTLS_HAVE_ASM makes mbedtls use its C
+          # fallback (still constant-time) and is the actual fix for the asm error.
+          # MBEDTLS_AESCE_C must go too: with the asm path off, aes.c still calls the
+          # ARMv8 AES-extension helpers in aesce.c, leaving them undefined at link.
+          sed -i -E 's@^#define (MBEDTLS_HAVE_ASM|MBEDTLS_AESCE_C)\>@// & disabled for EDK2 aarch64 build@' \
+            edk2/CryptoPkg/Library/MbedTlsLib/Include/mbedtls/mbedtls_config.h
+
+          # Drop -flto: belt-and-suspenders for the above, keeps RELEASE + -Os.
+          sed -i 's/ -flto//g' edk2/Conf/tools_def.txt
+
+          # edk2-stable202602 predates the GCC 13/14 cross-compiler used here, which
+          # emits new (often false-positive) warnings like -Wmaybe-uninitialized.
+          # Drop -Werror so those don't fail the build of this third-party tree.
+          sed -i 's/ -Werror//g' edk2/Conf/tools_def.txt
+
           build -p $ACTIVE_PLATFORM -b RELEASE -a AARCH64 -t GCC -n $(nproc)
 
       - name: Upload StandaloneMM firmware
