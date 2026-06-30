@@ -145,16 +145,18 @@ jobs:
 
   build-edk2:
     needs: determine-version
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      GCC_AARCH64_PREFIX: aarch64-linux-gnu-
 
     steps:
       - name: Cache and install build dependencies
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: build-essential gcc-aarch64-linux-gnu nasm acpica-tools uuid-dev python3-pip
-          version: 1.2
+          packages: acpica-tools gcc-aarch64-linux-gnu uuid-dev
+          version: 1.4
 
       - name: Checkout EDK2
         uses: actions/checkout@v4
