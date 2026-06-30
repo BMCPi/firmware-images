@@ -7,8 +7,12 @@ on:
         description: "U-Boot version tag to build"
         required: false
         type: string
-      tfa:
-        description: "TF-A (Trusted Firmware-A) version tag to build (e.g. v2.11.0)"
+      edk2:
+        description: "EDK2 stable tag (e.g. edk2-stable202502)"
+        required: false
+        type: string
+      optee:
+        description: "OP-TEE OS version tag (e.g. 4.5.0)"
         required: false
         type: string
       firmware:
@@ -33,7 +37,8 @@ jobs:
     outputs:
       release: ${{ steps.version.outputs.release }}
       uboot: ${{ steps.version.outputs.uboot }}
-      tfa: ${{ steps.version.outputs.tfa }}
+      edk2: ${{ steps.version.outputs.edk2 }}
+      optee: ${{ steps.version.outputs.optee }}
       firmware: ${{ steps.version.outputs.firmware }}
       linux: ${{ steps.version.outputs.linux }}
       talos_kernel: ${{ steps.version.outputs.talos_kernel }}
@@ -51,7 +56,8 @@ jobs:
 
           # Parse values from version file
           FILE_UBOOT_VER=$(grep '^uboot ' "$VERSION_FILE" | awk '{print $2}')
-          FILE_TFA_VER=$(grep '^tfa ' "$VERSION_FILE" | awk '{print $2}')
+          FILE_EDK2_VER=$(grep '^edk2 ' "$VERSION_FILE" | awk '{print $2}')
+          FILE_OPTEE_VER=$(grep '^optee ' "$VERSION_FILE" | awk '{print $2}')
           FILE_FIRMWARE_VER=$(grep '^firmware ' "$VERSION_FILE" | awk '{print $2}')
           FILE_LINUX_VER=$(grep '^linux ' "$VERSION_FILE" | awk '{print $2}')
           FILE_TALOS_KERNEL_VER=$(grep '^talos_kernel ' "$VERSION_FILE" | awk '{print $2}')
@@ -60,8 +66,11 @@ jobs:
           uboot="${{ inputs.uboot }}"
           uboot="${uboot:-$FILE_UBOOT_VER}"
 
-          tfa="${{ inputs.tfa }}"
-          tfa="${tfa:-$FILE_TFA_VER}"
+          edk2="${{ inputs.edk2 }}"
+          edk2="${edk2:-$FILE_EDK2_VER}"
+
+          optee="${{ inputs.optee }}"
+          optee="${optee:-$FILE_OPTEE_VER}"
 
           firmware="${{ inputs.firmware }}"
           firmware="${firmware:-$FILE_FIRMWARE_VER}"
@@ -75,7 +84,8 @@ jobs:
           release="u-boot-${uboot}"
 
           echo "uboot=$uboot" >> $GITHUB_OUTPUT
-          echo "tfa=$tfa" >> $GITHUB_OUTPUT
+          echo "edk2=$edk2" >> $GITHUB_OUTPUT
+          echo "optee=$optee" >> $GITHUB_OUTPUT
           echo "firmware=$firmware" >> $GITHUB_OUTPUT
           echo "linux=$linux" >> $GITHUB_OUTPUT
           echo "talos_kernel=$talos_kernel" >> $GITHUB_OUTPUT
@@ -131,7 +141,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  build-tfa:
+  build-edk2:
     needs: determine-version
     runs-on: ubuntu-24.04-arm
     permissions:
@@ -141,33 +151,99 @@ jobs:
       - name: Cache and install build dependencies
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: build-essential gcc-aarch64-linux-gnu
+          packages: build-essential gcc-aarch64-linux-gnu nasm acpica-tools uuid-dev python3-pip
           version: 1.0
 
-      - name: Checkout TF-A
+      - name: Checkout EDK2
         uses: actions/checkout@v4
         with:
-          repository: arm-software/arm-trusted-firmware
+          repository: tianocore/edk2
+          path: edk2
+          ref: ${{ needs.determine-version.outputs.edk2 }}
+          submodules: recursive
+
+      - name: Checkout edk2-platforms
+        uses: actions/checkout@v4
+        with:
+          repository: tianocore/edk2-platforms
+          path: edk2-platforms
+          ref: ${{ needs.determine-version.outputs.edk2 }}
           fetch-depth: 1
-          path: tfa
-          ref: ${{ needs.determine-version.outputs.tfa }}
 
-      - name: Build TF-A for Raspberry Pi 4
-        working-directory: tfa
+      - name: Build EDK2 StandaloneMM
+        env:
+          GCC5_AARCH64_PREFIX: aarch64-linux-gnu-
         run: |
-          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=rpi4 DEBUG=1
-          cp build/rpi4/debug/bl31.bin ../armstub8.bin
+          export WORKSPACE=$(pwd)
+          export PACKAGES_PATH=$WORKSPACE/edk2:$WORKSPACE/edk2-platforms
+          export ACTIVE_PLATFORM="Platform/StandaloneMm/PlatformStandaloneMmPkg/PlatformStandaloneMmRpmb.dsc"
+          source edk2/edksetup.sh
+          make -C edk2/BaseTools
+          build -p $ACTIVE_PLATFORM -b RELEASE -a AARCH64 -t GCC5 -n $(nproc)
 
-      - name: Build TF-A for Raspberry Pi 5
-        working-directory: tfa
-        run: |
-          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=rpi5 DEBUG=1
-          cp build/rpi5/debug/bl31.bin ../armstub8-2712.bin
-
-      - name: Upload TF-A binaries
+      - name: Upload StandaloneMM firmware
         uses: actions/upload-artifact@v4
         with:
-          name: tfa-binaries
+          name: edk2-stmm
+          path: Build/MmStandaloneRpmb/RELEASE_GCC5/FV/BL32_AP_MM.fd
+          retention-days: 1
+          if-no-files-found: error
+
+  build-optee:
+    needs: [determine-version, build-edk2]
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+
+    steps:
+      - name: Cache and install build dependencies
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: build-essential gcc-arm-linux-gnueabihf python3-pyelftools
+          version: 1.0
+
+      - name: Checkout OP-TEE OS
+        uses: actions/checkout@v4
+        with:
+          repository: OP-TEE/optee_os
+          fetch-depth: 1
+          path: optee_os
+          ref: ${{ needs.determine-version.outputs.optee }}
+
+      - name: Download StandaloneMM firmware
+        uses: actions/download-artifact@v4
+        with:
+          name: edk2-stmm
+          path: optee_os
+
+      - name: Build OP-TEE for Raspberry Pi 3 (armstub8.bin)
+        working-directory: optee_os
+        run: |
+          export ARCH=arm
+          CROSS_COMPILE32=arm-linux-gnueabihf- make -j$(nproc) CFG_ARM64_core=y \
+            PLATFORM=rpi3 CFG_STMM_PATH=BL32_AP_MM.fd CFG_RPMB_FS=y \
+            CFG_RPMB_FS_DEV_ID=0 CFG_CORE_HEAP_SIZE=524288 CFG_RPMB_WRITE_KEY=y \
+            CFG_CORE_DYN_SHM=y CFG_RPMB_TESTKEY=y CFG_REE_FS=n \
+            CFG_CORE_ARM64_PA_BITS=48 CFG_TEE_CORE_LOG_LEVEL=1 \
+            CFG_TEE_TA_LOG_LEVEL=1 CFG_SCTLR_ALIGNMENT_CHECK=n
+          cp out/arm-plat-rpi3/core/tee.bin ../armstub8.bin
+
+      - name: Build OP-TEE for Raspberry Pi 5 (armstub8-2712.bin)
+        working-directory: optee_os
+        run: |
+          export ARCH=arm
+          CROSS_COMPILE32=arm-linux-gnueabihf- make -j$(nproc) CFG_ARM64_core=y \
+            PLATFORM=rpi5 CFG_STMM_PATH=BL32_AP_MM.fd CFG_RPMB_FS=y \
+            CFG_RPMB_FS_DEV_ID=0 CFG_CORE_HEAP_SIZE=524288 CFG_RPMB_WRITE_KEY=y \
+            CFG_CORE_DYN_SHM=y CFG_RPMB_TESTKEY=y CFG_REE_FS=n \
+            CFG_CORE_ARM64_PA_BITS=48 CFG_TEE_CORE_LOG_LEVEL=1 \
+            CFG_TEE_TA_LOG_LEVEL=1 CFG_SCTLR_ALIGNMENT_CHECK=n
+          cp out/arm-plat-rpi5/core/tee.bin ../armstub8-2712.bin
+
+      - name: Upload OP-TEE armstub binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: optee-binaries
           path: |
             armstub8.bin
             armstub8-2712.bin
@@ -351,7 +427,7 @@ jobs:
           if-no-files-found: error
 
   build-image:
-    needs: [determine-version, build-uboot, build-tfa, checkout-firmware, prepare-config, build-kernel-dtbos, extract-kernel-dtbs]
+    needs: [determine-version, build-uboot, build-optee, checkout-firmware, prepare-config, build-kernel-dtbos, extract-kernel-dtbs]
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
@@ -384,9 +460,9 @@ jobs:
           # Copy U-Boot as kernel8.img (default 64-bit kernel name; no config.txt kernel= entry needed)
           cp artifacts/uboot-binary/u-boot.bin build/kernel8.img
 
-          # Copy TF-A armstub binaries
-          cp artifacts/tfa-binaries/armstub8.bin build/armstub8.bin
-          cp artifacts/tfa-binaries/armstub8-2712.bin build/armstub8-2712.bin
+          # Copy OP-TEE armstub binaries
+          cp artifacts/optee-binaries/armstub8.bin build/armstub8.bin
+          cp artifacts/optee-binaries/armstub8-2712.bin build/armstub8-2712.bin
 
           ls -lah build/
 

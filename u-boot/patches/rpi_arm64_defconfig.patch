@@ -1588,6 +1588,11 @@ index 69e8e72c5d7..eb868d0f172 100644
 +CONFIG_GENERATE_SMBIOS_TABLE=y
 +CONFIG_CMD_SMBIOS=y
 +CONFIG_LOCALVERSION_AUTO=n
++# OP-TEE / RPMB secure storage
++CONFIG_OPTEE=y
++CONFIG_CMD_OPTEE_RPMB=y
++CONFIG_EFI_MM_COMM_TEE=y
++CONFIG_SUPPORT_EMMC_RPMB=y
 diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
 index c88931c8ec4..4451a657386 100644
 --- a/drivers/clk/Kconfig

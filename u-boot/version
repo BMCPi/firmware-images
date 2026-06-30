@@ -1,5 +1,6 @@
 uboot v2026.04
-tfa v2.15.0
+edk2 edk2-stable202605
+optee 4.10.0
 firmware master
 linux rpi-6.18.y
 talos_kernel v1.13.0-36-g6b315f7
