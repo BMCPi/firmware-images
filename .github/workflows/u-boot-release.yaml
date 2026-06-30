@@ -315,7 +315,7 @@ jobs:
       # OP-TEE is BL32, not an armstub. It must be linked to run at TF-A's
       # BL32_BASE and handed off by BL31. The TF-A patch (armtfw.patch) wires
       # SPD=opteed for rpi5, copies the appended OP-TEE image from
-      # RPI_OPTEE_IMAGE_BASE (0x20000) to BL32_BASE (0x10100000) and jumps to it.
+      # RPI_OPTEE_IMAGE_BASE (0x400000) to BL32_BASE (0x1D000000) and jumps to it.
       - name: Build OP-TEE for Raspberry Pi 5
         working-directory: optee_os
         run: |
@@ -323,15 +323,18 @@ jobs:
           # plat-rpi5 is already merged in 4.10.0; this patch only raises
           # DRAM0_SIZE 8GB->16GB so OP-TEE sees all DRAM on 16GB boards.
           patch -p1 --fuzz=3 < "${{ github.workspace }}/src/u-boot/patches/optee_os.patch"
-          # BRING-UP BISECTION: exact proven reference recipe (the rpi5 OP-TEE repo).
-          # Use 4.10.0's native CFG_TZDRAM_START (0x1D000000) - which TF-A's
-          # BL32_BASE now matches - instead of forcing the old port's 0x10100000.
-          # StMM/RPMB are intentionally dropped here to confirm OP-TEE core boots and
-          # prints I/TC + reaches U-Boot; re-add them one at a time once it does.
+          # Proven rpi5 OP-TEE recipe (native CFG_TZDRAM_START 0x1D000000, matched
+          # by TF-A BL32_BASE) + StandaloneMM hosting the EDK2 variable services
+          # (BL32_AP_MM.fd), with RPMB as the secure-storage backend so U-Boot can
+          # persist EFI variables through OP-TEE.
           make -j$(nproc) \
             PLATFORM=rpi5 CFG_ARM64_core=y \
             CFG_USER_TA_TARGETS=ta_arm64 CFG_DT=y CFG_TEE_CORE_DEBUG=y \
-            CFG_TEE_CORE_LOG_LEVEL=4 CFG_CORE_ASLR=n
+            CFG_TEE_CORE_LOG_LEVEL=4 CFG_CORE_ASLR=n \
+            CFG_STMM_PATH=BL32_AP_MM.fd \
+            CFG_RPMB_FS=y CFG_RPMB_FS_DEV_ID=0 CFG_RPMB_WRITE_KEY=y \
+            CFG_RPMB_TESTKEY=y CFG_REE_FS=n CFG_CORE_DYN_SHM=y \
+            CFG_CORE_HEAP_SIZE=524288 CFG_SCTLR_ALIGNMENT_CHECK=n
           ls -la out/arm-plat-rpi5/core/tee-raw.bin
 
       - name: Patch and build TF-A for Raspberry Pi 5 (SPD=opteed)
