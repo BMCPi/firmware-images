@@ -327,7 +327,7 @@ jobs:
           # plus our required CFG_TZDRAM_START (= TF-A BL32_BASE from armtfw.patch).
           # StMM/RPMB are intentionally dropped here to confirm OP-TEE core boots and
           # prints I/TC + reaches U-Boot; re-add them one at a time once it does.
-          CROSS_COMPILE32=arm-linux-gnueabihf- make -j$(nproc) \
+          make -j$(nproc) \
             PLATFORM=rpi5 CFG_ARM64_core=y CFG_TZDRAM_START=0x10100000 \
             CFG_USER_TA_TARGETS=ta_arm64 CFG_DT=y CFG_TEE_CORE_DEBUG=y \
             CFG_TEE_CORE_LOG_LEVEL=4 CFG_CORE_ASLR=n
