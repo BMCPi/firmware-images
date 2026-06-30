@@ -48,6 +48,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
 
       - name: Read versions from file
         id: version
@@ -103,6 +104,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
           path: src
           ref: ${{ github.ref }}
 
@@ -152,12 +154,13 @@ jobs:
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
           packages: build-essential gcc-aarch64-linux-gnu nasm acpica-tools uuid-dev python3-pip
-          version: 1.0
+          version: 1.2
 
       - name: Checkout EDK2
         uses: actions/checkout@v4
         with:
           repository: tianocore/edk2
+          fetch-depth: 1
           path: edk2
           ref: ${{ needs.determine-version.outputs.edk2 }}
           submodules: recursive
@@ -167,25 +170,25 @@ jobs:
         with:
           repository: tianocore/edk2-platforms
           path: edk2-platforms
-          ref: ${{ needs.determine-version.outputs.edk2 }}
+          ref: master
           fetch-depth: 1
 
       - name: Build EDK2 StandaloneMM
         env:
-          GCC5_AARCH64_PREFIX: aarch64-linux-gnu-
+          GCC_AARCH64_PREFIX: aarch64-linux-gnu-
         run: |
           export WORKSPACE=$(pwd)
           export PACKAGES_PATH=$WORKSPACE/edk2:$WORKSPACE/edk2-platforms
           export ACTIVE_PLATFORM="Platform/StandaloneMm/PlatformStandaloneMmPkg/PlatformStandaloneMmRpmb.dsc"
           source edk2/edksetup.sh
           make -C edk2/BaseTools
-          build -p $ACTIVE_PLATFORM -b RELEASE -a AARCH64 -t GCC5 -n $(nproc)
+          build -p $ACTIVE_PLATFORM -b DEBUG -a AARCH64 -t GCC -n $(nproc)
 
       - name: Upload StandaloneMM firmware
         uses: actions/upload-artifact@v4
         with:
           name: edk2-stmm
-          path: Build/MmStandaloneRpmb/RELEASE_GCC5/FV/BL32_AP_MM.fd
+          path: Build/MmStandaloneRpmb/DEBUG_GCC/FV/BL32_AP_MM.fd
           retention-days: 1
           if-no-files-found: error
 
@@ -296,6 +299,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
 
       - name: Upload config.txt
         uses: actions/upload-artifact@v4
