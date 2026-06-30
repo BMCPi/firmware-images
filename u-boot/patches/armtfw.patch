@@ -1,7 +1,8 @@
 # OP-TEE (SPD=opteed) support for Raspberry Pi 5, regenerated against TF-A v2.15.0.
 # Adapted from https://github.com/jonasjuffinger/OP-TEE-on-the-RPi-5 (Gerrit 28990).
 # BL31 copies the appended OP-TEE image from RPI_OPTEE_IMAGE_BASE (0x20000)
-# to BL32_BASE (0x10100000) and hands off to it; only active with SPD=opteed.
+# to BL32_BASE (0x1D000000, OP-TEE 4.10.0's native CFG_TZDRAM_START) and hands
+# off to it; only active with SPD=opteed.
 diff --git a/plat/rpi/common/rpi3_common.c b/plat/rpi/common/rpi3_common.c
 index 37f3736..c3e6405 100644
 --- a/plat/rpi/common/rpi3_common.c
@@ -59,8 +60,8 @@ index 2403c86..09d6cab 100644
  
 +ifeq (${SPD},opteed)
 +
-+BL32_BASE		  ?= 0x10100000
-+BL32_MEM_SIZE	?= 0x00F00000
++BL32_BASE		  ?= 0x1D000000
++BL32_MEM_SIZE	?= 0x02000000
 +BL32_MEM_BASE	= BL32_BASE
 +
 +# We expect that OP-TEE image will be placed right after TF-A

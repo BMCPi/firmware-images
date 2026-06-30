@@ -323,12 +323,13 @@ jobs:
           # plat-rpi5 is already merged in 4.10.0; this patch only raises
           # DRAM0_SIZE 8GB->16GB so OP-TEE sees all DRAM on 16GB boards.
           patch -p1 --fuzz=3 < "${{ github.workspace }}/src/u-boot/patches/optee_os.patch"
-          # BRING-UP BISECTION: exact proven reference recipe (the rpi5 OP-TEE repo)
-          # plus our required CFG_TZDRAM_START (= TF-A BL32_BASE from armtfw.patch).
+          # BRING-UP BISECTION: exact proven reference recipe (the rpi5 OP-TEE repo).
+          # Use 4.10.0's native CFG_TZDRAM_START (0x1D000000) - which TF-A's
+          # BL32_BASE now matches - instead of forcing the old port's 0x10100000.
           # StMM/RPMB are intentionally dropped here to confirm OP-TEE core boots and
           # prints I/TC + reaches U-Boot; re-add them one at a time once it does.
           make -j$(nproc) \
-            PLATFORM=rpi5 CFG_ARM64_core=y CFG_TZDRAM_START=0x10100000 \
+            PLATFORM=rpi5 CFG_ARM64_core=y \
             CFG_USER_TA_TARGETS=ta_arm64 CFG_DT=y CFG_TEE_CORE_DEBUG=y \
             CFG_TEE_CORE_LOG_LEVEL=4 CFG_CORE_ASLR=n
           ls -la out/arm-plat-rpi5/core/tee-raw.bin
