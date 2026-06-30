@@ -1,11 +1,18 @@
-# Raspberry Pi 5: raise OP-TEE DRAM0_SIZE from 8GB to 16GB so OP-TEE is aware
-# of all DRAM on 16GB boards (safe on smaller). From the rpi5 reference port:
-# https://github.com/jonasjuffinger/OP-TEE-on-the-RPi-5 (patches/optee_os.diff).
+# Raspberry Pi 5 plat-config tweaks for OP-TEE 4.10.0:
+#  - Console: confirm CONSOLE_UART_BASE is UART10 (0x107d001000), the debug
+#    probe (ttyAMA10) - NOT the RP1 GPIO uart0/1; just clarifies a stale comment.
+#  - DRAM0_SIZE 8GB -> 16GB so OP-TEE sees all DRAM on 16GB boards.
 diff --git a/core/arch/arm/plat-rpi5/platform_config.h b/core/arch/arm/plat-rpi5/platform_config.h
-index 913fe5a..7762455 100644
+index 913fe5a..cd49cf3 100644
 --- a/core/arch/arm/plat-rpi5/platform_config.h
 +++ b/core/arch/arm/plat-rpi5/platform_config.h
-@@ -17,6 +17,6 @@
+@@ -12,11 +12,11 @@
+ #define STACK_ALIGNMENT		64
+ 
+ /* PL011 UART */
+-#define CONSOLE_UART_BASE	0x107d001000ULL /* UART0 */
++#define CONSOLE_UART_BASE	0x107d001000ULL /* UART10 - debug probe (ttyAMA10), not RP1 uart0/1 */
+ #define CONSOLE_BAUDRATE	0		/* VPU will set UART for us */
  #define CONSOLE_UART_CLK_IN_HZ  0
  
  #define DRAM0_BASE		0x00000000

@@ -348,9 +348,11 @@ jobs:
       - name: Assemble armstub8-2712.bin (BL31 + OP-TEE)
         run: |
           cp arm-trusted-firmware/build/rpi5/debug/bl31.bin armstub8-2712.bin
-          # OP-TEE goes at RPI_OPTEE_IMAGE_BASE = 0x20000 = 128 KiB (bs=1024 seek=128).
+          # OP-TEE goes at RPI_OPTEE_IMAGE_BASE = 0x400000 = 4 MiB (bs=1024 seek=4096),
+          # above the GPU's kernel load (0x200000) and relocated U-Boot (0x80000) so
+          # the kernel relocation can't clobber the staged OP-TEE image.
           dd if=optee_os/out/arm-plat-rpi5/core/tee-raw.bin of=armstub8-2712.bin \
-            bs=1024 seek=128 conv=notrunc
+            bs=1024 seek=4096 conv=notrunc
           ls -la armstub8-2712.bin
 
       # --- Raspberry Pi 4 (BCM2711): plain TF-A BL31 ---
