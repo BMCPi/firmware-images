@@ -19,6 +19,10 @@ on:
         description: "OP-TEE OS version tag (e.g. 4.5.0)"
         required: false
         type: string
+      tfa:
+        description: "TF-A commit/tag for the rpi5 OP-TEE armstub (patch base)"
+        required: false
+        type: string
       firmware:
         description: "Raspberry Pi firmware version"
         required: false
@@ -44,6 +48,7 @@ jobs:
       edk2: ${{ steps.version.outputs.edk2 }}
       edk2_platforms: ${{ steps.version.outputs.edk2_platforms }}
       optee: ${{ steps.version.outputs.optee }}
+      tfa: ${{ steps.version.outputs.tfa }}
       firmware: ${{ steps.version.outputs.firmware }}
       linux: ${{ steps.version.outputs.linux }}
       talos_kernel: ${{ steps.version.outputs.talos_kernel }}
@@ -65,6 +70,7 @@ jobs:
           FILE_EDK2_VER=$(grep '^edk2 ' "$VERSION_FILE" | awk '{print $2}')
           FILE_EDK2_PLATFORMS_VER=$(grep '^edk2-platforms ' "$VERSION_FILE" | awk '{print $2}')
           FILE_OPTEE_VER=$(grep '^optee ' "$VERSION_FILE" | awk '{print $2}')
+          FILE_TFA_VER=$(grep '^tfa ' "$VERSION_FILE" | awk '{print $2}')
           FILE_FIRMWARE_VER=$(grep '^firmware ' "$VERSION_FILE" | awk '{print $2}')
           FILE_LINUX_VER=$(grep '^linux ' "$VERSION_FILE" | awk '{print $2}')
           FILE_TALOS_KERNEL_VER=$(grep '^talos_kernel ' "$VERSION_FILE" | awk '{print $2}')
@@ -82,6 +88,9 @@ jobs:
           optee="${{ inputs.optee }}"
           optee="${optee:-$FILE_OPTEE_VER}"
 
+          tfa="${{ inputs.tfa }}"
+          tfa="${tfa:-$FILE_TFA_VER}"
+
           firmware="${{ inputs.firmware }}"
           firmware="${firmware:-$FILE_FIRMWARE_VER}"
 
@@ -97,6 +106,7 @@ jobs:
           echo "edk2=$edk2" >> $GITHUB_OUTPUT
           echo "edk2_platforms=$edk2_platforms" >> $GITHUB_OUTPUT
           echo "optee=$optee" >> $GITHUB_OUTPUT
+          echo "tfa=$tfa" >> $GITHUB_OUTPUT
           echo "firmware=$firmware" >> $GITHUB_OUTPUT
           echo "linux=$linux" >> $GITHUB_OUTPUT
           echo "talos_kernel=$talos_kernel" >> $GITHUB_OUTPUT
@@ -269,8 +279,15 @@ jobs:
       - name: Cache and install build dependencies
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: build-essential gcc-arm-linux-gnueabihf python3-pyelftools
-          version: 1.0
+          packages: build-essential gcc-arm-linux-gnueabihf python3-pyelftools python3-cryptography libssl-dev device-tree-compiler bc patch
+          version: 2.1
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+          path: src
 
       - name: Checkout OP-TEE OS
         uses: actions/checkout@v4
@@ -280,37 +297,67 @@ jobs:
           path: optee_os
           ref: ${{ needs.determine-version.outputs.optee }}
 
+      - name: Checkout TF-A
+        uses: actions/checkout@v4
+        with:
+          repository: ARM-software/arm-trusted-firmware
+          fetch-depth: 1
+          path: arm-trusted-firmware
+          ref: ${{ needs.determine-version.outputs.tfa }}
+
       - name: Download StandaloneMM firmware
         uses: actions/download-artifact@v4
         with:
           name: edk2-stmm
           path: optee_os
 
-      - name: Build OP-TEE for Raspberry Pi 3 (armstub8.bin)
+      # --- Raspberry Pi 5 (BCM2712): TF-A BL31 + OP-TEE BL32, concatenated ---
+      # OP-TEE is BL32, not an armstub. It must be linked to run at TF-A's
+      # BL32_BASE and handed off by BL31. The TF-A patch (armtfw.patch) wires
+      # SPD=opteed for rpi5, copies the appended OP-TEE image from
+      # RPI_OPTEE_IMAGE_BASE (0x20000) to BL32_BASE (0x10100000) and jumps to it.
+      - name: Build OP-TEE for Raspberry Pi 5
         working-directory: optee_os
         run: |
           export ARCH=arm
+          # CFG_TZDRAM_START must match TF-A BL32_BASE from armtfw.patch.
           CROSS_COMPILE32=arm-linux-gnueabihf- make -j$(nproc) CFG_ARM64_core=y \
-            PLATFORM=rpi3 CFG_STMM_PATH=BL32_AP_MM.fd CFG_RPMB_FS=y \
+            PLATFORM=rpi5 CFG_TZDRAM_START=0x10100000 \
+            CFG_STMM_PATH=BL32_AP_MM.fd CFG_RPMB_FS=y \
             CFG_RPMB_FS_DEV_ID=0 CFG_CORE_HEAP_SIZE=524288 CFG_RPMB_WRITE_KEY=y \
             CFG_CORE_DYN_SHM=y CFG_RPMB_TESTKEY=y CFG_REE_FS=n \
             CFG_CORE_ARM64_PA_BITS=48 CFG_TEE_CORE_LOG_LEVEL=1 \
             CFG_TEE_TA_LOG_LEVEL=1 CFG_SCTLR_ALIGNMENT_CHECK=n
-          cp out/arm-plat-rpi3/core/tee.bin ../armstub8.bin
+          ls -la out/arm-plat-rpi5/core/tee-raw.bin
 
-      - name: Build OP-TEE for Raspberry Pi 5 (armstub8-2712.bin)
-        working-directory: optee_os
+      - name: Patch and build TF-A for Raspberry Pi 5 (SPD=opteed)
+        working-directory: arm-trusted-firmware
         run: |
-          export ARCH=arm
-          CROSS_COMPILE32=arm-linux-gnueabihf- make -j$(nproc) CFG_ARM64_core=y \
-            PLATFORM=rpi5 CFG_STMM_PATH=BL32_AP_MM.fd CFG_RPMB_FS=y \
-            CFG_RPMB_FS_DEV_ID=0 CFG_CORE_HEAP_SIZE=524288 CFG_RPMB_WRITE_KEY=y \
-            CFG_CORE_DYN_SHM=y CFG_RPMB_TESTKEY=y CFG_REE_FS=n \
-            CFG_CORE_ARM64_PA_BITS=48 CFG_TEE_CORE_LOG_LEVEL=1 \
-            CFG_TEE_TA_LOG_LEVEL=1 CFG_SCTLR_ALIGNMENT_CHECK=n
-          cp out/arm-plat-rpi5/core/tee.bin ../armstub8-2712.bin
+          # armtfw.patch is regenerated for TF-A v2.15.0 (applies with zero fuzz);
+          # --fuzz=3 leaves slack for minor drift if the tfa pin is bumped.
+          patch -p1 --fuzz=3 < "${{ github.workspace }}/src/u-boot/patches/armtfw.patch"
+          make -j$(nproc) PLAT=rpi5 SPD=opteed DEBUG=1
+          ls -la build/rpi5/debug/bl31.bin
 
-      - name: Upload OP-TEE armstub binaries
+      - name: Assemble armstub8-2712.bin (BL31 + OP-TEE)
+        run: |
+          cp arm-trusted-firmware/build/rpi5/debug/bl31.bin armstub8-2712.bin
+          # OP-TEE goes at RPI_OPTEE_IMAGE_BASE = 0x20000 = 128 KiB (bs=1024 seek=128).
+          dd if=optee_os/out/arm-plat-rpi5/core/tee-raw.bin of=armstub8-2712.bin \
+            bs=1024 seek=128 conv=notrunc
+          ls -la armstub8-2712.bin
+
+      # --- Raspberry Pi 4 (BCM2711): plain TF-A BL31 ---
+      # Mainline TF-A rpi4 has no OP-TEE/BL32 support, so this armstub is the
+      # EL3 monitor only (the patch is inert without SPD=opteed). No fTPM on rpi4.
+      - name: Build TF-A for Raspberry Pi 4 (armstub8.bin)
+        working-directory: arm-trusted-firmware
+        run: |
+          make -j$(nproc) PLAT=rpi4 DEBUG=1
+          cp build/rpi4/debug/bl31.bin ../armstub8.bin
+          ls -la ../armstub8.bin
+
+      - name: Upload armstub binaries
         uses: actions/upload-artifact@v4
         with:
           name: optee-binaries
