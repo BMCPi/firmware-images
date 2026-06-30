@@ -1485,7 +1485,7 @@ index ac331f1c1b0..fe1b5b6bf64 100644
  			iface->desc.bInterfaceSubClass > US_SC_MAX) {
  		debug("Not mass storage\n");
 diff --git a/configs/rpi_arm64_defconfig b/configs/rpi_arm64_defconfig
-index 69e8e72c5d7..c4242129514 100644
+index 69e8e72c5d7..fb9c775f977 100644
 --- a/configs/rpi_arm64_defconfig
 +++ b/configs/rpi_arm64_defconfig
 @@ -4,7 +4,7 @@ CONFIG_ARCH_BCM283X=y
@@ -1535,7 +1535,7 @@ index 69e8e72c5d7..c4242129514 100644
  CONFIG_SYS_DFU_DATA_BUF_SIZE=0x100000
  CONFIG_SYS_DFU_MAX_FILE_SIZE=0x200000
  CONFIG_BCM2835_GPIO=y
-@@ -65,3 +76,56 @@ CONFIG_VIDEO_BCM2835=y
+@@ -65,3 +76,57 @@ CONFIG_VIDEO_BCM2835=y
  CONFIG_CONSOLE_SCROLL_LINES=10
  CONFIG_PHYS_TO_BUS=y
  # CONFIG_HEXDUMP is not set
@@ -1590,6 +1590,7 @@ index 69e8e72c5d7..c4242129514 100644
 +CONFIG_LOCALVERSION_AUTO=n
 +# Optee
 +CONFIG_OPTEE=y
++CONFIG_CMD_OPTEE=y
 +CONFIG_CMD_OPTEE_RPMB=y
 +CONFIG_EFI_MM_COMM_TEE=y
 diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
