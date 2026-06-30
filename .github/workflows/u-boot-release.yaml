@@ -339,7 +339,9 @@ jobs:
           # armtfw.patch is regenerated for TF-A v2.15.0 (applies with zero fuzz);
           # --fuzz=3 leaves slack for minor drift if the tfa pin is bumped.
           patch -p1 --fuzz=3 < "${{ github.workspace }}/src/u-boot/patches/armtfw.patch"
-          make -j$(nproc) PLAT=rpi5 SPD=opteed RPI3_RUNTIME_UART=1 DEBUG=1
+          # LOG_LEVEL=50 (VERBOSE) surfaces the patch's "rpi: Moving OP-TEE Image
+          # to 10100000" line, confirming the handoff code runs + the address.
+          make -j$(nproc) PLAT=rpi5 SPD=opteed RPI3_RUNTIME_UART=1 DEBUG=1 LOG_LEVEL=50
           ls -la build/rpi5/debug/bl31.bin
 
       - name: Assemble armstub8-2712.bin (BL31 + OP-TEE)
