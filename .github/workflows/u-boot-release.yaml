@@ -7,6 +7,10 @@ on:
         description: "U-Boot version tag to build"
         required: false
         type: string
+      tfa:
+        description: "TF-A (Trusted Firmware-A) version tag to build (e.g. v2.11.0)"
+        required: false
+        type: string
       firmware:
         description: "Raspberry Pi firmware version"
         required: false
@@ -29,6 +33,7 @@ jobs:
     outputs:
       release: ${{ steps.version.outputs.release }}
       uboot: ${{ steps.version.outputs.uboot }}
+      tfa: ${{ steps.version.outputs.tfa }}
       firmware: ${{ steps.version.outputs.firmware }}
       linux: ${{ steps.version.outputs.linux }}
       talos_kernel: ${{ steps.version.outputs.talos_kernel }}
@@ -46,6 +51,7 @@ jobs:
 
           # Parse values from version file
           FILE_UBOOT_VER=$(grep '^uboot ' "$VERSION_FILE" | awk '{print $2}')
+          FILE_TFA_VER=$(grep '^tfa ' "$VERSION_FILE" | awk '{print $2}')
           FILE_FIRMWARE_VER=$(grep '^firmware ' "$VERSION_FILE" | awk '{print $2}')
           FILE_LINUX_VER=$(grep '^linux ' "$VERSION_FILE" | awk '{print $2}')
           FILE_TALOS_KERNEL_VER=$(grep '^talos_kernel ' "$VERSION_FILE" | awk '{print $2}')
@@ -53,6 +59,9 @@ jobs:
           # Use workflow_dispatch inputs if provided, otherwise use file values
           uboot="${{ inputs.uboot }}"
           uboot="${uboot:-$FILE_UBOOT_VER}"
+
+          tfa="${{ inputs.tfa }}"
+          tfa="${tfa:-$FILE_TFA_VER}"
 
           firmware="${{ inputs.firmware }}"
           firmware="${firmware:-$FILE_FIRMWARE_VER}"
@@ -66,6 +75,7 @@ jobs:
           release="u-boot-${uboot}"
 
           echo "uboot=$uboot" >> $GITHUB_OUTPUT
+          echo "tfa=$tfa" >> $GITHUB_OUTPUT
           echo "firmware=$firmware" >> $GITHUB_OUTPUT
           echo "linux=$linux" >> $GITHUB_OUTPUT
           echo "talos_kernel=$talos_kernel" >> $GITHUB_OUTPUT
@@ -118,6 +128,49 @@ jobs:
         with:
           name: uboot-binary
           path: u-boot/u-boot.bin
+          retention-days: 1
+          if-no-files-found: error
+
+  build-tfa:
+    needs: determine-version
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+
+    steps:
+      - name: Cache and install build dependencies
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: build-essential gcc-aarch64-linux-gnu
+          version: 1.0
+
+      - name: Checkout TF-A
+        uses: actions/checkout@v4
+        with:
+          repository: arm-software/arm-trusted-firmware
+          fetch-depth: 1
+          path: tfa
+          ref: ${{ needs.determine-version.outputs.tfa }}
+
+      - name: Build TF-A for Raspberry Pi 4
+        working-directory: tfa
+        run: |
+          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=rpi4 DEBUG=1
+          cp build/rpi4/debug/bl31.bin ../armstub8.bin
+
+      - name: Build TF-A for Raspberry Pi 5
+        working-directory: tfa
+        run: |
+          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=rpi5 DEBUG=1
+          cp build/rpi5/debug/bl31.bin ../armstub8-2712.bin
+
+      - name: Upload TF-A binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfa-binaries
+          path: |
+            armstub8.bin
+            armstub8-2712.bin
           retention-days: 1
           if-no-files-found: error
 
@@ -298,7 +351,7 @@ jobs:
           if-no-files-found: error
 
   build-image:
-    needs: [determine-version, build-uboot, checkout-firmware, prepare-config, build-kernel-dtbos, extract-kernel-dtbs]
+    needs: [determine-version, build-uboot, build-tfa, checkout-firmware, prepare-config, build-kernel-dtbos, extract-kernel-dtbs]
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
@@ -328,8 +381,13 @@ jobs:
           mkdir -p mnt
           mkdir -p out
 
-          # Copy U-Boot binaries
-          cp artifacts/uboot-*/*.bin build/
+          # Copy U-Boot as kernel8.img (default 64-bit kernel name; no config.txt kernel= entry needed)
+          cp artifacts/uboot-binary/u-boot.bin build/kernel8.img
+
+          # Copy TF-A armstub binaries
+          cp artifacts/tfa-binaries/armstub8.bin build/armstub8.bin
+          cp artifacts/tfa-binaries/armstub8-2712.bin build/armstub8-2712.bin
+
           ls -lah build/
 
           # Copy config file
