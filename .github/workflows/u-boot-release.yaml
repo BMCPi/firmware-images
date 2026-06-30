@@ -320,6 +320,9 @@ jobs:
         working-directory: optee_os
         run: |
           export ARCH=arm
+          # plat-rpi5 is already merged in 4.10.0; this patch only raises
+          # DRAM0_SIZE 8GB->16GB so OP-TEE sees all DRAM on 16GB boards.
+          patch -p1 --fuzz=3 < "${{ github.workspace }}/src/u-boot/patches/optee_os.patch"
           # CFG_TZDRAM_START must match TF-A BL32_BASE from armtfw.patch.
           CROSS_COMPILE32=arm-linux-gnueabihf- make -j$(nproc) CFG_ARM64_core=y \
             PLATFORM=rpi5 CFG_TZDRAM_START=0x10100000 \
@@ -336,7 +339,7 @@ jobs:
           # armtfw.patch is regenerated for TF-A v2.15.0 (applies with zero fuzz);
           # --fuzz=3 leaves slack for minor drift if the tfa pin is bumped.
           patch -p1 --fuzz=3 < "${{ github.workspace }}/src/u-boot/patches/armtfw.patch"
-          make -j$(nproc) PLAT=rpi5 SPD=opteed DEBUG=1
+          make -j$(nproc) PLAT=rpi5 SPD=opteed RPI3_RUNTIME_UART=1 DEBUG=1
           ls -la build/rpi5/debug/bl31.bin
 
       - name: Assemble armstub8-2712.bin (BL31 + OP-TEE)
