@@ -1,0 +1,40 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2712";
+
+	/*
+	 * Advertise OP-TEE (SMC transport) so U-Boot's and Linux's OP-TEE
+	 * drivers bind. U-Boot needs this node to probe the EFI variable
+	 * MM transport (StandaloneMM hosted by OP-TEE).
+	 */
+	fragment@0 {
+		target = <&firmware>;
+		__overlay__ {
+			optee {
+				compatible = "linaro,optee-tz";
+				method = "smc";
+			};
+		};
+	};
+
+	/*
+	 * Reserve OP-TEE secure DRAM (TZDRAM) so the normal world never
+	 * allocates into it. rpi5 has no secure-memory firewall, so this is
+	 * the only thing keeping U-Boot/Linux out of OP-TEE's memory.
+	 * Must match OP-TEE's CFG_TZDRAM_START (0x1D000000) and
+	 * CFG_TZDRAM_SIZE (0x02000000 = 32 MiB). rmem is <2>/<2> cells.
+	 */
+	fragment@1 {
+		target = <&rmem>;
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <2>;
+			optee_core@1d000000 {
+				reg = <0x00 0x1d000000 0x00 0x02000000>;
+				no-map;
+			};
+		};
+	};
+};

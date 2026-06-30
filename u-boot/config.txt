@@ -42,4 +42,7 @@ enable_uart=0
 # Restore CPU thermal monitoring; the Talos kernel's mainline bcm2712 DTB
 # omits the AVS monitor and thermal-zones nodes.
 dtoverlay=bcm2712-thermal
+# Advertise OP-TEE + reserve its TZDRAM (0x1D000000, 32MB) so U-Boot/Linux
+# bind the OP-TEE driver and never allocate into OP-TEE's secure memory.
+dtoverlay=optee
 # gpio=14=op,dh
