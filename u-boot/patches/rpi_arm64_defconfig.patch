@@ -1513,7 +1513,7 @@ index ac331f1c1b0..fe1b5b6bf64 100644
  			iface->desc.bInterfaceSubClass > US_SC_MAX) {
  		debug("Not mass storage\n");
 diff --git a/configs/rpi_arm64_defconfig b/configs/rpi_arm64_defconfig
-index 69e8e72c5d7..198c8a583e0 100644
+index 69e8e72c5d7..20764fe2a27 100644
 --- a/configs/rpi_arm64_defconfig
 +++ b/configs/rpi_arm64_defconfig
 @@ -4,7 +4,7 @@ CONFIG_ARCH_BCM283X=y
@@ -1525,7 +1525,7 @@ index 69e8e72c5d7..198c8a583e0 100644
  CONFIG_OF_LIBFDT_OVERLAY=y
  CONFIG_DM_RESET=y
  CONFIG_SYS_LOAD_ADDR=0x1000000
-@@ -15,24 +15,38 @@ CONFIG_BOOTSTD_DEFAULTS=y
+@@ -15,24 +15,44 @@ CONFIG_BOOTSTD_DEFAULTS=y
  CONFIG_OF_BOARD_SETUP=y
  CONFIG_FDT_SIMPLEFB=y
  CONFIG_USE_PREBOOT=y
@@ -1553,11 +1553,17 @@ index 69e8e72c5d7..198c8a583e0 100644
 +CONFIG_VERSION_VARIABLE=y
  CONFIG_ENV_VARS_UBOOT_RUNTIME_CONFIG=y
 +# UEFI variable persistence
-+# Non-volatile UEFI variables are stored via OP-TEE StandAloneMM (edk2 StMM),
-+# selected below by CONFIG_EFI_MM_COMM_TEE. That is a mutually-exclusive choice
-+# with CONFIG_EFI_VARIABLE_FILE_STORE, so the file store must stay disabled.
++# Non-volatile UEFI variables are stored as a plain file (ubootefi.var) on the
++# USB volume the BMC provides (usb :auto) - the same volume as persistent.env /
++# machine.env - so the BMC can read and manage the variables directly. The
++# EFI_VAR_FILE_STORE_IFACE/DEV overrides below pin the file to usb :auto instead
++# of U-Boot's auto-detected EFI system partition. This replaces the OP-TEE
++# StandAloneMM (EFI_MM_COMM_TEE) backend, whose RPMB store was an opaque,
++# encrypted, BMC-unreadable blob.
 +CONFIG_FAT_WRITE=y
-+# CONFIG_EFI_VARIABLE_FILE_STORE is not set
++CONFIG_EFI_VARIABLE_FILE_STORE=y
++CONFIG_EFI_VAR_FILE_STORE_IFACE="usb"
++CONFIG_EFI_VAR_FILE_STORE_DEV=":auto"
 +# CONFIG_ENV_RELOC_GD_ENV_ADDR=y
  CONFIG_TFTP_TSIZE=y
  CONFIG_DM_DMA=y
@@ -1566,7 +1572,7 @@ index 69e8e72c5d7..198c8a583e0 100644
  CONFIG_SYS_DFU_DATA_BUF_SIZE=0x100000
  CONFIG_SYS_DFU_MAX_FILE_SIZE=0x200000
  CONFIG_BCM2835_GPIO=y
-@@ -65,3 +79,79 @@ CONFIG_VIDEO_BCM2835=y
+@@ -65,3 +85,70 @@ CONFIG_VIDEO_BCM2835=y
  CONFIG_CONSOLE_SCROLL_LINES=10
  CONFIG_PHYS_TO_BUS=y
  # CONFIG_HEXDUMP is not set
@@ -1626,26 +1632,17 @@ index 69e8e72c5d7..198c8a583e0 100644
 +CONFIG_GENERATE_SMBIOS_TABLE=y
 +CONFIG_CMD_SMBIOS=y
 +CONFIG_LOCALVERSION_AUTO=n
-+# Optee (TEE core must be enabled for the OP-TEE driver to build; the OP-TEE
-+# StandAloneMM is the backend for CONFIG_EFI_MM_COMM_TEE UEFI variables)
++# OP-TEE: no longer used for UEFI variables now that the file store (above) owns
++# that job, so EFI_MM_COMM_TEE and the RPMB emulator (OPTEE_RPMB_EMU) are gone.
++# The TEE/OPTEE driver is kept only so the OP-TEE secure world loaded by the
++# TF-A armstub (SPD=opteed) still probes cleanly; it does nothing here. It (and
++# the armstub's SPD=opteed / StMM / dtoverlay=optee) can be torn out entirely as
++# a follow-up if nothing else needs OP-TEE.
 +CONFIG_TEE=y
 +CONFIG_OPTEE=y
 +CONFIG_CMD_OPTEE=y
-+# RPMB services OP-TEE's RPC requests to read/write the RPMB partition, where
-+# StandAloneMM persists the authenticated UEFI variables; this is required for
-+# EFI_MM_COMM_TEE to actually store variables (and gates CONFIG_CMD_OPTEE_RPMB).
 +CONFIG_SUPPORT_EMMC_RPMB=y
 +CONFIG_CMD_OPTEE_RPMB=y
-+CONFIG_EFI_MM_COMM_TEE=y
-+# The Raspberry Pi 5 Model B has no eMMC and therefore no hardware RPMB, so the
-+# eMMC RPMB supplicant cannot back OP-TEE secure storage. Emulate RPMB in a file
-+# on the boot FAT partition (mmc 0:1) instead, so the StandAloneMM UEFI variable
-+# store has somewhere persistent to live. NOTE: this gives no rollback/tamper
-+# protection - it is variable persistence only, not a root of trust.
-+CONFIG_OPTEE_RPMB_EMU=y
-+CONFIG_OPTEE_RPMB_EMU_IFACE="usb"
-+CONFIG_OPTEE_RPMB_EMU_DEV=":auto"
-+CONFIG_OPTEE_RPMB_EMU_FILE="rpmb_emu.bin"
 diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
 index c88931c8ec4..4451a657386 100644
 --- a/drivers/clk/Kconfig
@@ -6318,3 +6315,65 @@ index be37ed272e1..cf68e8c82c6 100644
  
  /* device request (setup) */
  struct devrequest {
+diff --git a/lib/efi_loader/Kconfig b/lib/efi_loader/Kconfig
+index 13e44be1d06..8bf490ecb74 100644
+--- a/lib/efi_loader/Kconfig
++++ b/lib/efi_loader/Kconfig
+@@ -123,6 +123,30 @@ config EFI_VARIABLE_FILE_STORE
+ 	  Select this option if you want non-volatile UEFI variables to be
+ 	  stored as file /ubootefi.var on the EFI system partition.
+ 
++config EFI_VAR_FILE_STORE_IFACE
++	string "Block interface for the UEFI variable file (empty = auto ESP)"
++	depends on EFI_VARIABLE_FILE_STORE
++	default ""
++	help
++	  If non-empty, ubootefi.var is read and written on this block device
++	  interface (as passed to 'fs_set_blk_dev', e.g. "usb", "mmc", "nvme")
++	  together with EFI_VAR_FILE_STORE_DEV, instead of the auto-detected
++	  EFI system partition. This lets the variable file live on a fixed
++	  volume such as "usb :auto" - for example a disk provided out-of-band
++	  by a BMC that needs to read and manage the variables directly.
++
++	  Leave empty to keep the default behaviour of writing to the first
++	  discovered EFI system partition.
++
++config EFI_VAR_FILE_STORE_DEV
++	string "Device:partition for the UEFI variable file"
++	depends on EFI_VARIABLE_FILE_STORE
++	default ""
++	help
++	  Device and partition string (e.g. "0:1" or ":auto") on
++	  EFI_VAR_FILE_STORE_IFACE used to store ubootefi.var. Only used when
++	  EFI_VAR_FILE_STORE_IFACE is non-empty.
++
+ config EFI_MM_COMM_TEE
+ 	bool "UEFI variables storage service via the trusted world"
+ 	depends on OPTEE
+diff --git a/lib/efi_loader/efi_var_file.c b/lib/efi_loader/efi_var_file.c
+index f23a964a418..d8a1539a376 100644
+--- a/lib/efi_loader/efi_var_file.c
++++ b/lib/efi_loader/efi_var_file.c
+@@ -37,6 +37,22 @@ static efi_status_t __maybe_unused efi_set_blk_dev_to_system_partition(void)
+ 	char part_str[PART_STR_LEN];
+ 	int r;
+ 
++#ifdef CONFIG_EFI_VAR_FILE_STORE_IFACE
++	/*
++	 * Optional fixed target: store ubootefi.var on a configured volume
++	 * (e.g. "usb :auto") instead of the auto-detected EFI system
++	 * partition. Useful when the variable file must live on a specific
++	 * disk - for example one provided out-of-band by a BMC that manages
++	 * the variables directly. An empty interface keeps the default
++	 * (auto-detected system partition) behaviour.
++	 */
++	if (CONFIG_EFI_VAR_FILE_STORE_IFACE[0]) {
++		r = fs_set_blk_dev(CONFIG_EFI_VAR_FILE_STORE_IFACE,
++				   CONFIG_EFI_VAR_FILE_STORE_DEV, FS_TYPE_ANY);
++		return r ? EFI_DEVICE_ERROR : EFI_SUCCESS;
++	}
++#endif
++
+ 	if (efi_system_partition.uclass_id == UCLASS_INVALID)
+ 		return EFI_DEVICE_ERROR;
+ 
