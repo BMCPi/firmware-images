@@ -6137,7 +6137,7 @@ index a687f4d8e85..d7cbb560790 100644
   * load_fdt_from_load_option - load device-tree from load option
   *
 diff --git a/lib/efi_loader/efi_net.c b/lib/efi_loader/efi_net.c
-index c2b85dac236..fd346f5864b 100644
+index c2b85dac236..815973247b7 100644
 --- a/lib/efi_loader/efi_net.c
 +++ b/lib/efi_loader/efi_net.c
 @@ -17,9 +17,11 @@
@@ -6162,7 +6162,7 @@ index c2b85dac236..fd346f5864b 100644
  #endif
  	void *new_tx_packet;
  	void *transmit_buffer;
-@@ -1120,6 +1125,86 @@ set_addr:
+@@ -1120,6 +1125,97 @@ set_addr:
  	return r;
  }
  
@@ -6205,6 +6205,17 @@ index c2b85dac236..fd346f5864b 100644
 +	/* Only the boot manager's network boot is supported, not generic load. */
 +	if (!boot_policy)
 +		return EFI_EXIT(EFI_UNSUPPORTED);
++
++	/*
++	 * We only serve the DHCP-provided bootfile, which corresponds to an
++	 * empty remaining device path. A request for a specific file - e.g. a
++	 * device tree the boot manager tries to fetch from the network via
++	 * efi_load_distro_fdt() - is not something PXE resolves here; return
++	 * EFI_NOT_FOUND so the caller falls back to U-Boot's internal device
++	 * tree instead of mistaking the boot image for an FDT.
++	 */
++	if (file_path && file_path->type != DEVICE_PATH_TYPE_END)
++		return EFI_EXIT(EFI_NOT_FOUND);
 +
 +	if (!efi_net_pxe_ready) {
 +		const char *addr_str = env_get("kernel_addr_r");
@@ -6249,7 +6260,7 @@ index c2b85dac236..fd346f5864b 100644
  /**
   * efi_net_register() - register the simple network protocol
   *
-@@ -1203,6 +1288,17 @@ efi_status_t efi_net_register(struct udevice *dev)
+@@ -1203,6 +1299,17 @@ efi_status_t efi_net_register(struct udevice *dev)
  			     &netobj->pxe);
  	if (r != EFI_SUCCESS)
  		goto failure_to_add_protocol;
