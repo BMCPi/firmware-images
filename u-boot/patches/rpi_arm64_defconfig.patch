@@ -6026,7 +6026,7 @@ index a687f4d8e85..f9d1ef61544 100644
  		ret = EFI_INVALID_PARAMETER;
  		goto err;
 diff --git a/lib/efi_loader/efi_net.c b/lib/efi_loader/efi_net.c
-index c2b85dac236..1d247edc408 100644
+index c2b85dac236..fd346f5864b 100644
 --- a/lib/efi_loader/efi_net.c
 +++ b/lib/efi_loader/efi_net.c
 @@ -17,9 +17,11 @@
@@ -6051,13 +6051,14 @@ index c2b85dac236..1d247edc408 100644
  #endif
  	void *new_tx_packet;
  	void *transmit_buffer;
-@@ -1120,6 +1125,75 @@ set_addr:
+@@ -1120,6 +1125,86 @@ set_addr:
  	return r;
  }
  
 +#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
 +/* Cached PXE download, valid between the two LoadFile calls for one boot. */
 +static efi_uintn_t efi_net_pxe_size;
++static ulong efi_net_pxe_addr;
 +static bool efi_net_pxe_ready;
 +
 +/**
@@ -6095,13 +6096,23 @@ index c2b85dac236..1d247edc408 100644
 +		return EFI_EXIT(EFI_UNSUPPORTED);
 +
 +	if (!efi_net_pxe_ready) {
++		const char *addr_str = env_get("kernel_addr_r");
 +		int arch = efi_get_pxe_arch();
 +
++		/*
++		 * Download to kernel_addr_r, like the bootstd 'efi' bootmeth,
++		 * NOT image_load_addr: on some boards (e.g. Raspberry Pi) the
++		 * firmware device tree that $fdt_addr points to sits near
++		 * image_load_addr, and overwriting it makes the boot manager's
++		 * efi_install_fdt() fail later with "invalid device tree".
++		 */
++		efi_net_pxe_addr = addr_str ? hextoul(addr_str, NULL)
++					    : image_load_addr;
 +		if (arch >= 0)
 +			env_set_hex("bootp_arch", arch);
 +		env_set("bootfile", NULL);
 +
-+		if (dhcp_run(image_load_addr, NULL, true))
++		if (dhcp_run(efi_net_pxe_addr, NULL, true))
 +			return EFI_EXIT(EFI_DEVICE_ERROR);
 +
 +		efi_net_pxe_size = env_get_hex("filesize", 0);
@@ -6115,8 +6126,8 @@ index c2b85dac236..1d247edc408 100644
 +		return EFI_EXIT(EFI_BUFFER_TOO_SMALL);
 +	}
 +
-+	/* The EFI-allocated buffer may overlap image_load_addr; use memmove(). */
-+	memmove(buffer, (void *)image_load_addr, efi_net_pxe_size);
++	/* The EFI-allocated buffer may overlap the download; use memmove(). */
++	memmove(buffer, (void *)efi_net_pxe_addr, efi_net_pxe_size);
 +	*buffer_size = efi_net_pxe_size;
 +	efi_net_pxe_ready = false;	/* re-arm for the next boot attempt */
 +
@@ -6127,7 +6138,7 @@ index c2b85dac236..1d247edc408 100644
  /**
   * efi_net_register() - register the simple network protocol
   *
-@@ -1203,6 +1277,17 @@ efi_status_t efi_net_register(struct udevice *dev)
+@@ -1203,6 +1288,17 @@ efi_status_t efi_net_register(struct udevice *dev)
  			     &netobj->pxe);
  	if (r != EFI_SUCCESS)
  		goto failure_to_add_protocol;
