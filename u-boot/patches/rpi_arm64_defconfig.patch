@@ -1451,15 +1451,158 @@ index b0a1484c0fa..8283d1eee36 100644
  	struct acpi_table_header *ssdt;
  	int ret;
 diff --git a/board/raspberrypi/rpi/rpi.env b/board/raspberrypi/rpi/rpi.env
-index 9ac9d6768ca..4ce9b2e71c7 100644
+index 9ac9d6768ca..3c30d577f6e 100644
 --- a/board/raspberrypi/rpi/rpi.env
 +++ b/board/raspberrypi/rpi/rpi.env
-@@ -77,4 +77,4 @@ pxefile_addr_r=0x05500000
+@@ -77,4 +77,16 @@ pxefile_addr_r=0x05500000
  fdt_addr_r=0x05600000
  ramdisk_addr_r=0x05700000
  
 -boot_targets=mmc usb pxe dhcp
 +boot_targets=mmc usb nvme dhcp
++
++/*
++ * Named TFTP boot entry for chainloading iPXE's SNP build (snp-arm64.efi).
++ * The UEFI boot manager cannot express a TFTP Boot#### option - its network
++ * loader is http:// only (wget) - so this is a plain U-Boot boot command:
++ * DHCP for an address, TFTP snp-arm64.efi from the DHCP next-server, then run
++ * it as an EFI application. U-Boot exposes the EFI Simple Network Protocol
++ * (efi_net, built with NETDEVICES) to the loaded image, so iPXE-snp gets a
++ * working NIC. Invoke with 'run boot_snp'; set bootcmd or once.env to
++ * 'run boot_snp' for a one-shot network boot.
++ */
++boot_snp=dhcp ${kernel_addr_r} snp-arm64.efi && bootefi ${kernel_addr_r}
+diff --git a/cmd/efidebug.c b/cmd/efidebug.c
+index 109496d9e95..cb86b3efa9e 100644
+--- a/cmd/efidebug.c
++++ b/cmd/efidebug.c
+@@ -8,6 +8,7 @@
+ #include <charset.h>
+ #include <command.h>
+ #include <dm/device.h>
++#include <dm/uclass.h>
+ #include <efi_device_path.h>
+ #include <efi_dt_fixup.h>
+ #include <efi_load_initrd.h>
+@@ -804,8 +805,9 @@ static int efi_boot_add_uri(int argc, char *const argv[], u16 *var_name16,
+ 	if (!label)
+ 		return CMD_RET_FAILURE;
+ 
+-	if (!wget_validate_uri(argv[3])) {
+-		printf("ERROR: invalid URI\n");
++	if (!wget_validate_uri(argv[3]) &&
++	    strncmp(argv[3], "tftp://", strlen("tftp://"))) {
++		printf("ERROR: invalid URI (expected http:// or tftp://)\n");
+ 		return CMD_RET_FAILURE;
+ 	}
+ 
+@@ -831,6 +833,76 @@ static int efi_boot_add_uri(int argc, char *const argv[], u16 *var_name16,
+ 	return CMD_RET_SUCCESS;
+ }
+ 
++#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
++/**
++ * efi_boot_add_net() - set a network (PXE) load option
++ *
++ * Build a Boot#### whose device path is the MAC() path of an Ethernet
++ * interface. At boot the EFI boot manager finds that NIC's Load File protocol
++ * (installed by efi_net.c) and PXE-boots it: DHCP as a UEFI PXE client, then
++ * TFTP the server-provided bootfile.
++ *
++ *     efidebug boot add -n <bootid> <label> <eth-devnum>
++ *
++ * @argc:		Number of arguments
++ * @argv:		Argument array
++ * @var_name16:		variable name buffer
++ * @var_name16_size:	variable name buffer size
++ * @lo:			pointer to the load option
++ * @file_path:		buffer to set the generated device path pointer
++ * @fp_size:		file_path size
++ * Return:		CMD_RET_SUCCESS on success, CMD_RET_USAGE/FAILURE otherwise
++ */
++static int efi_boot_add_net(int argc, char *const argv[], u16 *var_name16,
++			    size_t var_name16_size, struct efi_load_option *lo,
++			    struct efi_device_path **file_path,
++			    efi_uintn_t *fp_size)
++{
++	struct efi_device_path *dp;
++	struct udevice *dev;
++	char *endp;
++	u16 *label;
++	int id, devnum;
++
++	if (argc < 4 || lo->label)
++		return CMD_RET_USAGE;
++
++	id = (int)hextoul(argv[1], &endp);
++	if (*endp != '\0' || id > 0xffff)
++		return CMD_RET_USAGE;
++
++	label = efi_convert_string(argv[2]);
++	if (!label)
++		return CMD_RET_FAILURE;
++
++	devnum = (int)dectoul(argv[3], &endp);
++	if (*endp != '\0') {
++		free(label);
++		return CMD_RET_USAGE;
++	}
++	if (uclass_get_device(UCLASS_ETH, devnum, &dev)) {
++		printf("ERROR: ethernet device %d not found\n", devnum);
++		free(label);
++		return CMD_RET_FAILURE;
++	}
++
++	dp = efi_dp_from_eth(dev);
++	if (!dp) {
++		free(label);
++		return CMD_RET_FAILURE;
++	}
++
++	efi_create_indexed_name(var_name16, var_name16_size, "Boot", id);
++	lo->label = label;
++
++	*file_path = dp;
++	/* efi_dp_from_eth() returns a terminated device path */
++	*fp_size += efi_dp_size(dp) + sizeof(EFI_DP_END);
++
++	return CMD_RET_SUCCESS;
++}
++#endif /* CONFIG_EFI_NET_PXE_BOOT */
++
+ /**
+  * do_efi_boot_add() - set UEFI load option
+  *
+@@ -960,6 +1032,17 @@ static int do_efi_boot_add(struct cmd_tbl *cmdtp, int flag,
+ 			argc -= 1;
+ 			argv += 1;
+ 			break;
++#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
++		case 'n':
++			r = efi_boot_add_net(argc, argv, var_name16,
++					     sizeof(var_name16), &lo,
++					     &file_path, &fp_size);
++			if (r != CMD_RET_SUCCESS)
++				goto out;
++			argc -= 3;
++			argv += 3;
++			break;
++#endif
+ 		case 'u':
+ 			if (IS_ENABLED(CONFIG_EFI_HTTP_BOOT)) {
+ 				r = efi_boot_add_uri(argc, argv, var_name16,
+@@ -1647,7 +1730,10 @@ U_BOOT_LONGHELP(efidebug,
+ 	"  -i|-I <interface> <devnum>[:<part>] <initrd file path>\n"
+ 	"  (-b, -d, -i for short form device path)\n"
+ #if (IS_ENABLED(CONFIG_EFI_HTTP_BOOT))
+-	"  -u <bootid> <label> <uri>\n"
++	"  -u <bootid> <label> <uri>   (uri: http:// or tftp://<ip>/<file>)\n"
++#endif
++#if (IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT))
++	"  -n <bootid> <label> <eth-devnum>   (UEFI PXE / DHCP network boot)\n"
+ #endif
+ 	"  -s '<optional data>'\n"
+ 	"efidebug boot rm <bootid#1> [<bootid#2> [<bootid#3> [...]]]\n"
 diff --git a/common/usb_storage.c b/common/usb_storage.c
 index ac331f1c1b0..fe1b5b6bf64 100644
 --- a/common/usb_storage.c
@@ -1513,7 +1656,7 @@ index ac331f1c1b0..fe1b5b6bf64 100644
  			iface->desc.bInterfaceSubClass > US_SC_MAX) {
  		debug("Not mass storage\n");
 diff --git a/configs/rpi_arm64_defconfig b/configs/rpi_arm64_defconfig
-index 69e8e72c5d7..e7440f12665 100644
+index 69e8e72c5d7..ef723cc91c9 100644
 --- a/configs/rpi_arm64_defconfig
 +++ b/configs/rpi_arm64_defconfig
 @@ -4,7 +4,7 @@ CONFIG_ARCH_BCM283X=y
@@ -1572,7 +1715,7 @@ index 69e8e72c5d7..e7440f12665 100644
  CONFIG_SYS_DFU_DATA_BUF_SIZE=0x100000
  CONFIG_SYS_DFU_MAX_FILE_SIZE=0x200000
  CONFIG_BCM2835_GPIO=y
-@@ -65,3 +85,59 @@ CONFIG_VIDEO_BCM2835=y
+@@ -65,3 +85,69 @@ CONFIG_VIDEO_BCM2835=y
  CONFIG_CONSOLE_SCROLL_LINES=10
  CONFIG_PHYS_TO_BUS=y
  # CONFIG_HEXDUMP is not set
@@ -1610,6 +1753,16 @@ index 69e8e72c5d7..e7440f12665 100644
 +CONFIG_EFI_BOOTMGR=y
 +CONFIG_CMD_BOOTEFI_BOOTMGR=y
 +CONFIG_CMD_EFICONFIG=y
++# UEFI HTTP Boot: lets the EFI boot manager load a Boot#### URI option over HTTP
++# (efidebug boot add -u <id> <label> http://host/file.efi). Selects CMD_WGET /
++# CMD_DNS / BLKMAP. Note: with the legacy net stack, wget accepts http:// only
++# (no https/tftp) - TFTP network boot uses the boot_snp env entry / PXE instead.
++CONFIG_EFI_HTTP_BOOT=y
++# Classic UEFI PXE as an EFI boot-manager option: installs a Load File protocol
++# on each NIC so 'efidebug boot add -n' creates a MAC() Boot#### that DHCPs (as
++# a UEFI PXE client, arch 0xB) and TFTPs the server-provided bootfile - orderable
++# in BootOrder/BootNext by the BMC alongside disk and http:// entries.
++CONFIG_EFI_NET_PXE_BOOT=y
 +# Expo Menu
 +CONFIG_BOOTSTD_FULL=y
 +CONFIG_BOOTSTD_BOOTCOMMAND=y
@@ -5745,7 +5898,7 @@ index be37ed272e1..cf68e8c82c6 100644
  /* device request (setup) */
  struct devrequest {
 diff --git a/lib/efi_loader/Kconfig b/lib/efi_loader/Kconfig
-index 13e44be1d06..8bf490ecb74 100644
+index 13e44be1d06..cfbd338c2aa 100644
 --- a/lib/efi_loader/Kconfig
 +++ b/lib/efi_loader/Kconfig
 @@ -123,6 +123,30 @@ config EFI_VARIABLE_FILE_STORE
@@ -5779,6 +5932,219 @@ index 13e44be1d06..8bf490ecb74 100644
  config EFI_MM_COMM_TEE
  	bool "UEFI variables storage service via the trusted world"
  	depends on OPTEE
+@@ -572,6 +596,20 @@ config EFI_HTTP_BOOT
+ 	help
+ 	  Enabling this option adds EFI HTTP Boot support. It allows to
+ 	  directly boot from network.
++
++config EFI_NET_PXE_BOOT
++	bool "EFI boot manager PXE (network) boot options"
++	depends on EFI_BOOTMGR && NETDEVICES && CMD_DHCP && BOOTP_PXE
++	default y
++	help
++	  Install an EFI_LOAD_FILE_PROTOCOL on each network interface so the
++	  UEFI boot manager can boot a Boot#### option whose device path is
++	  that interface's MAC() path: it runs DHCP as a UEFI PXE client
++	  (client architecture from DHCP_PXE_CLIENTARCH) and TFTPs the
++	  server-provided bootfile. Create such options with the
++	  'efidebug boot add -n' subcommand. This makes classic PXE boot
++	  orderable from the EFI boot manager (BootOrder / BootNext) alongside
++	  disk and HTTP entries.
+ endmenu
+ 
+ config BOOTEFI_HELLO_COMPILE
+diff --git a/lib/efi_loader/efi_bootmgr.c b/lib/efi_loader/efi_bootmgr.c
+index a687f4d8e85..f9d1ef61544 100644
+--- a/lib/efi_loader/efi_bootmgr.c
++++ b/lib/efi_loader/efi_bootmgr.c
+@@ -10,6 +10,7 @@
+ #include <blk.h>
+ #include <blkmap.h>
+ #include <charset.h>
++#include <command.h>
+ #include <dm.h>
+ #include <efi.h>
+ #include <efi_device_path.h>
+@@ -477,6 +478,46 @@ static void EFIAPI efi_bootmgr_http_return(struct efi_event *event,
+ 	EFI_EXIT(ret);
+ }
+ 
++/**
++ * efi_bootmgr_tftp_load() - download a tftp:// URI via the tftp command
++ *
++ * The UEFI boot manager has no native PXE/network loader, but a boot option
++ * with a URI device path lets us treat "tftp://<host>/<path>" like the HTTP
++ * URI case: run the normal U-Boot tftp command to @addr. This keeps PXE boot
++ * expressible as an ordinary Boot#### variable (managed in BootOrder just like
++ * disk and http:// entries).
++ *
++ * @addr:	load address
++ * @uri:	"tftp://<host>/<path>" URI (host must be an IP address)
++ * Return:	0 on success, -1 on failure
++ */
++static int efi_bootmgr_tftp_load(ulong addr, const char *uri)
++{
++	struct cmd_tbl cmdtp = {};
++	char addr_str[17];
++	char host_file[256];
++	char *tftp_argv[] = {"tftp", addr_str, host_file, NULL};
++	const char *host = uri + strlen("tftp://");
++	const char *slash = strchr(host, '/');
++	size_t host_len;
++
++	/* Expect tftp://<host>/<path> with a non-empty host and path */
++	if (!slash || slash == host || !slash[1])
++		return -1;
++	host_len = slash - host;
++	if (host_len + 1 + strlen(slash + 1) + 1 > sizeof(host_file))
++		return -1;
++
++	/* The tftp command expects "<host>:<path>" */
++	memcpy(host_file, host, host_len);
++	host_file[host_len] = ':';
++	strcpy(host_file + host_len + 1, slash + 1);
++	snprintf(addr_str, sizeof(addr_str), "%lx", addr);
++
++	/* do_tftpb() returns CMD_RET_SUCCESS (0) on success */
++	return do_tftpb(&cmdtp, 0, 3, tftp_argv) ? -1 : 0;
++}
++
+ /**
+  * try_load_from_uri_path() - Handle the URI device path
+  *
+@@ -520,7 +561,11 @@ static efi_status_t try_load_from_uri_path(struct efi_device_path_uri *uridp,
+ 	}
+ 
+ 	image_addr = hextoul(s, NULL);
+-	err = wget_do_request(image_addr, uridp->uri);
++	if (!strncmp((const char *)uridp->uri, "tftp://", strlen("tftp://")))
++		err = efi_bootmgr_tftp_load(image_addr,
++					    (const char *)uridp->uri);
++	else
++		err = wget_do_request(image_addr, uridp->uri);
+ 	if (err < 0) {
+ 		ret = EFI_INVALID_PARAMETER;
+ 		goto err;
+diff --git a/lib/efi_loader/efi_net.c b/lib/efi_loader/efi_net.c
+index c2b85dac236..1d247edc408 100644
+--- a/lib/efi_loader/efi_net.c
++++ b/lib/efi_loader/efi_net.c
+@@ -17,9 +17,11 @@
+ 
+ #define LOG_CATEGORY LOGC_EFI
+ 
++#include <efi.h>
+ #include <efi_device_path.h>
+ #include <efi_loader.h>
+ #include <env.h>
++#include <image.h>
+ #include <dm.h>
+ #include <linux/sizes.h>
+ #include <malloc.h>
+@@ -99,6 +101,9 @@ struct efi_net_obj {
+ #endif
+ #if IS_ENABLED(CONFIG_EFI_HTTP_PROTOCOL)
+ 	struct efi_service_binding_protocol http_service_binding;
++#endif
++#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
++	struct efi_load_file_protocol load_file;
+ #endif
+ 	void *new_tx_packet;
+ 	void *transmit_buffer;
+@@ -1120,6 +1125,75 @@ set_addr:
+ 	return r;
+ }
+ 
++#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
++/* Cached PXE download, valid between the two LoadFile calls for one boot. */
++static efi_uintn_t efi_net_pxe_size;
++static bool efi_net_pxe_ready;
++
++/**
++ * efi_net_load_file() - EFI_LOAD_FILE_PROTOCOL producer for PXE network boot
++ *
++ * Lets the UEFI boot manager boot a Boot#### option whose device path is a
++ * NIC's MAC() path. Presents as a UEFI PXE client (client architecture from
++ * CONFIG_DHCP_PXE_CLIENTARCH), runs DHCP and TFTPs the server-provided
++ * bootfile. Implements the two-call LoadFile convention expected by
++ * efi_load_image_from_path(): the first call (@buffer == NULL) downloads the
++ * image, reports its size and returns EFI_BUFFER_TOO_SMALL; the second call
++ * copies it into the caller-allocated @buffer.
++ *
++ * @this:		the Load File protocol instance
++ * @file_path:		remaining device path (unused; DHCP selects the bootfile)
++ * @boot_policy:	must be true - only boot-manager PXE load is supported
++ * @buffer_size:	on entry the buffer size, on exit the image size
++ * @buffer:		buffer to receive the image, or NULL to query the size
++ * Return:		status code
++ */
++static efi_status_t EFIAPI efi_net_load_file(struct efi_load_file_protocol *this,
++					     struct efi_device_path *file_path,
++					     bool boot_policy,
++					     efi_uintn_t *buffer_size,
++					     void *buffer)
++{
++	EFI_ENTRY("%p, %p, %d, %p, %p", this, file_path, boot_policy,
++		  buffer_size, buffer);
++
++	if (!this || !buffer_size)
++		return EFI_EXIT(EFI_INVALID_PARAMETER);
++
++	/* Only the boot manager's network boot is supported, not generic load. */
++	if (!boot_policy)
++		return EFI_EXIT(EFI_UNSUPPORTED);
++
++	if (!efi_net_pxe_ready) {
++		int arch = efi_get_pxe_arch();
++
++		if (arch >= 0)
++			env_set_hex("bootp_arch", arch);
++		env_set("bootfile", NULL);
++
++		if (dhcp_run(image_load_addr, NULL, true))
++			return EFI_EXIT(EFI_DEVICE_ERROR);
++
++		efi_net_pxe_size = env_get_hex("filesize", 0);
++		if (!efi_net_pxe_size)
++			return EFI_EXIT(EFI_NOT_FOUND);
++		efi_net_pxe_ready = true;
++	}
++
++	if (!buffer || *buffer_size < efi_net_pxe_size) {
++		*buffer_size = efi_net_pxe_size;
++		return EFI_EXIT(EFI_BUFFER_TOO_SMALL);
++	}
++
++	/* The EFI-allocated buffer may overlap image_load_addr; use memmove(). */
++	memmove(buffer, (void *)image_load_addr, efi_net_pxe_size);
++	*buffer_size = efi_net_pxe_size;
++	efi_net_pxe_ready = false;	/* re-arm for the next boot attempt */
++
++	return EFI_EXIT(EFI_SUCCESS);
++}
++#endif /* CONFIG_EFI_NET_PXE_BOOT */
++
+ /**
+  * efi_net_register() - register the simple network protocol
+  *
+@@ -1203,6 +1277,17 @@ efi_status_t efi_net_register(struct udevice *dev)
+ 			     &netobj->pxe);
+ 	if (r != EFI_SUCCESS)
+ 		goto failure_to_add_protocol;
++#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
++	/*
++	 * Load File protocol so the boot manager can PXE-boot a Boot#### option
++	 * whose device path is this NIC's MAC() path (see efi_net_load_file()).
++	 */
++	netobj->load_file.load_file = efi_net_load_file;
++	r = efi_add_protocol(&netobj->header, &efi_guid_load_file_protocol,
++			     &netobj->load_file);
++	if (r != EFI_SUCCESS)
++		goto failure_to_add_protocol;
++#endif
+ 	netobj->net.revision = EFI_SIMPLE_NETWORK_PROTOCOL_REVISION;
+ 	netobj->net.start = efi_net_start;
+ 	netobj->net.stop = efi_net_stop;
 diff --git a/lib/efi_loader/efi_var_file.c b/lib/efi_loader/efi_var_file.c
 index f23a964a418..d8a1539a376 100644
 --- a/lib/efi_loader/efi_var_file.c
