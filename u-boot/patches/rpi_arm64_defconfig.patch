@@ -15,10 +15,10 @@ index 82ad3035308..6327028f330 100644
  
 diff --git a/arch/arm/dts/bcm2712-rpi-5-b-u-boot.dtsi b/arch/arm/dts/bcm2712-rpi-5-b-u-boot.dtsi
 new file mode 100644
-index 00000000000..4fcdbdb1925
+index 00000000000..ea5806c94c8
 --- /dev/null
 +++ b/arch/arm/dts/bcm2712-rpi-5-b-u-boot.dtsi
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,214 @@
 +/*
 + * PCIe DMA Override
 + *
@@ -91,6 +91,52 @@ index 00000000000..4fcdbdb1925
 +
 +&rp1_usb1 {
 +	bootph-all;
++};
++
++/*
++ * RP1 I2C1 - 40-pin header i2c bus (GPIO2/3, header pins 3/5) - and the
++ * UEFI variable store EEPROM.
++ *
++ * The upstream rp1-common.dtsi carries no i2c nodes, so add the controller
++ * here: a Designware I2C block at RP1 peripheral offset 0x74000, clocked
++ * from clk_sys (200 MHz), matching the downstream rp1.dtsi.
++ *
++ * The 24c256 EEPROM at 0x50 holds the serialized non-volatile UEFI
++ * variable blob (CONFIG_EFI_VARIABLE_I2C_STORE) at offset 0.  It may be a
++ * real EEPROM or an I2C slave emulated by the BMC, which can then read and
++ * modify BootOrder/BootNext out-of-band.
++ */
++&pci_ep_bus {
++	rp1_i2c1: i2c@40074000 {
++		compatible = "snps,designware-i2c";
++		reg = <0x00 0x40074000  0x0 0x1000>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++		clocks = <&rp1_clocks RP1_CLK_SYS>;
++		clock-frequency = <100000>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&rp1_i2c1_pins>;
++
++		eeprom@50 {
++			compatible = "atmel,24c256";
++			reg = <0x50>;
++			pagesize = <64>;
++		};
++	};
++};
++
++/*
++ * Pin group for RP1 I2C1: GPIO2/3 funcsel a3 = i2c1_sda/i2c1_scl (RP1
++ * datasheet / Linux pinctrl-rp1.c).  Numeric pins/function values are
++ * parsed by the rp1 pinctrl driver (drivers/gpio/rp1_gpio.c); the internal
++ * pull-ups back up the on-board pull resistors on the header i2c pins.
++ */
++&rp1_gpio {
++	rp1_i2c1_pins: i2c1-pins {
++		pins = <2 3>;
++		function = <3>;
++		bias-pull-up;
++	};
 +};
 +
 +/*
@@ -1665,7 +1711,7 @@ index ac331f1c1b0..fe1b5b6bf64 100644
  			iface->desc.bInterfaceSubClass > US_SC_MAX) {
  		debug("Not mass storage\n");
 diff --git a/configs/rpi_arm64_defconfig b/configs/rpi_arm64_defconfig
-index 69e8e72c5d7..ef723cc91c9 100644
+index 69e8e72c5d7..d0ea6609e14 100644
 --- a/configs/rpi_arm64_defconfig
 +++ b/configs/rpi_arm64_defconfig
 @@ -4,7 +4,7 @@ CONFIG_ARCH_BCM283X=y
@@ -1677,7 +1723,7 @@ index 69e8e72c5d7..ef723cc91c9 100644
  CONFIG_OF_LIBFDT_OVERLAY=y
  CONFIG_DM_RESET=y
  CONFIG_SYS_LOAD_ADDR=0x1000000
-@@ -15,24 +15,44 @@ CONFIG_BOOTSTD_DEFAULTS=y
+@@ -15,24 +15,43 @@ CONFIG_BOOTSTD_DEFAULTS=y
  CONFIG_OF_BOARD_SETUP=y
  CONFIG_FDT_SIMPLEFB=y
  CONFIG_USE_PREBOOT=y
@@ -1705,17 +1751,16 @@ index 69e8e72c5d7..ef723cc91c9 100644
 +CONFIG_VERSION_VARIABLE=y
  CONFIG_ENV_VARS_UBOOT_RUNTIME_CONFIG=y
 +# UEFI variable persistence
-+# Non-volatile UEFI variables are stored as a plain file (ubootefi.var) on the
-+# USB volume the BMC provides (usb :auto) - the same volume as persistent.env /
-+# machine.env - so the BMC can read and manage the variables directly. The
-+# EFI_VAR_FILE_STORE_IFACE/DEV overrides below pin the file to usb :auto instead
-+# of U-Boot's auto-detected EFI system partition. This replaces the OP-TEE
-+# StandAloneMM (EFI_MM_COMM_TEE) backend, whose RPMB store was an opaque,
-+# encrypted, BMC-unreadable blob.
++# Non-volatile UEFI variables are persisted as a single serialized blob
++# (ubootefi.var format: magic/length/CRC32) at offset 0 of the I2C EEPROM on
++# the 40-pin header i2c bus (RP1 i2c1, GPIO2/3 - see the rp1_i2c1 node in
++# bcm2712-rpi-5-b-u-boot.dtsi). The "EEPROM" may be a real 24c256 or an I2C
++# slave emulated by the BMC, which can read and rewrite BootOrder/BootNext
++# out-of-band. This replaces the earlier ubootefi.var-on-USB file store
++# (EFI_VAR_FILE_STORE_IFACE="usb"), which itself replaced the OP-TEE
++# StandAloneMM (EFI_MM_COMM_TEE) backend with its opaque RPMB store.
 +CONFIG_FAT_WRITE=y
-+CONFIG_EFI_VARIABLE_FILE_STORE=y
-+CONFIG_EFI_VAR_FILE_STORE_IFACE="usb"
-+CONFIG_EFI_VAR_FILE_STORE_DEV=":auto"
++CONFIG_EFI_VARIABLE_I2C_STORE=y
 +# CONFIG_ENV_RELOC_GD_ENV_ADDR=y
  CONFIG_TFTP_TSIZE=y
  CONFIG_DM_DMA=y
@@ -1724,7 +1769,7 @@ index 69e8e72c5d7..ef723cc91c9 100644
  CONFIG_SYS_DFU_DATA_BUF_SIZE=0x100000
  CONFIG_SYS_DFU_MAX_FILE_SIZE=0x200000
  CONFIG_BCM2835_GPIO=y
-@@ -65,3 +85,69 @@ CONFIG_VIDEO_BCM2835=y
+@@ -65,3 +84,76 @@ CONFIG_VIDEO_BCM2835=y
  CONFIG_CONSOLE_SCROLL_LINES=10
  CONFIG_PHYS_TO_BUS=y
  # CONFIG_HEXDUMP is not set
@@ -1735,6 +1780,13 @@ index 69e8e72c5d7..ef723cc91c9 100644
 +CONFIG_CMD_TEMPERATURE=y
 +CONFIG_MFD_RP1=y
 +CONFIG_RP1_GPIO=y
++# I2C: RP1 i2c1 (Designware) on header GPIO2/3 + UEFI variable store EEPROM
++# (the rp1 pinctrl driver in rp1_gpio.c muxes the pins)
++CONFIG_CMD_I2C=y
++CONFIG_DM_I2C=y
++CONFIG_SYS_I2C_DW=y
++CONFIG_MISC=y
++CONFIG_I2C_EEPROM=y
 +CONFIG_RESET_BRCMSTB=y
 +CONFIG_RESET_BRCMSTB_RESCAL=y
 +CONFIG_CLK=y
@@ -1823,10 +1875,10 @@ index 5f0c0d8a5c2..71ebdb62da2 100644
 +obj-$(CONFIG_CLK_RP1) += clk-rp1.o
 diff --git a/drivers/clk/clk-rp1.c b/drivers/clk/clk-rp1.c
 new file mode 100644
-index 00000000000..b481e59fc6f
+index 00000000000..49533988485
 --- /dev/null
 +++ b/drivers/clk/clk-rp1.c
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,295 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Clock driver for RP1 PCIe multifunction chip.
@@ -2075,6 +2127,20 @@ index 00000000000..b481e59fc6f
 +	return 0;
 +}
 +
++static ulong rp1_clock_get_rate(struct clk *hw)
++{
++	/*
++	 * The RP1 firmware brings the clock tree up before U-Boot runs and
++	 * rp1-common.dtsi pins clk_sys to 200 MHz via assigned-clock-rates.
++	 * Report that fixed rate so peripheral drivers (e.g. Designware I2C)
++	 * can derive correct bus timings; other clocks are not needed yet.
++	 */
++	if (hw->id == RP1_CLK_SYS)
++		return 200 * MHz;
++
++	return -ENOSYS;
++}
++
 +static int rp1_clk_probe(struct udevice *dev)
 +{
 +	struct rp1_clockman *clockman = dev_get_priv(dev);
@@ -2095,6 +2161,7 @@ index 00000000000..b481e59fc6f
 +
 +static struct clk_ops rp1_clk_ops = {
 +	.set_rate = rp1_clock_set_rate,
++	.get_rate = rp1_clock_get_rate,
 +	.enable = rp1_clock_on,
 +};
 +
@@ -2425,10 +2492,10 @@ index 00000000000..a113c7966c2
 +};
 diff --git a/drivers/gpio/rp1_gpio.c b/drivers/gpio/rp1_gpio.c
 new file mode 100644
-index 00000000000..a64af18fcf6
+index 00000000000..fc6ec4f0c9b
 --- /dev/null
 +++ b/drivers/gpio/rp1_gpio.c
-@@ -0,0 +1,374 @@
+@@ -0,0 +1,473 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Copyright (C) 2024 EPAM Systems
@@ -2441,6 +2508,8 @@ index 00000000000..a64af18fcf6
 +#include <errno.h>
 +#include <asm/gpio.h>
 +#include <asm/io.h>
++#include <dm/device-internal.h>
++#include <dm/pinctrl.h>
 +#include <linux/bitops.h>
 +
 +#define RP1_NUM_GPIOS	54
@@ -2790,18 +2859,115 @@ index 00000000000..a64af18fcf6
 +	return 0;
 +}
 +
-+static const struct udevice_id rp1_gpio_ids[] = {
++/*
++ * No of_match: the "raspberrypi,rp1-gpio" node is claimed by the pinctrl
++ * driver below, which binds this GPIO driver as a child device on the same
++ * node (Linux handles both functions in a single pinctrl driver).
++ */
++U_BOOT_DRIVER(rp1_gpio) = {
++	.name = "rp1-gpio",
++	.id = UCLASS_GPIO,
++	.ops = &rp1_gpio_ops,
++	.priv_auto	= sizeof(struct rp1_gpio_priv),
++	.probe = rp1_gpio_probe,
++};
++
++/*
++ * Pin controller.
++ *
++ * Config nodes are children of the rp1-gpio node and use numeric pin and
++ * funcsel values (same style as pinctrl-bcm2712.c), plus the standard bias
++ * properties:
++ *
++ *	rp1_i2c1_pins: i2c1-pins {
++ *		pins = <2 3>;
++ *		function = <3>;
++ *		bias-pull-up;
++ *	};
++ *
++ * "function" is the RP1 funcsel index (a0..a8, see the RP1 datasheet or
++ * Linux pinctrl-rp1.c); one value for all pins or one value per pin.
++ */
++static int rp1_pinctrl_set_state(struct udevice *dev, struct udevice *config)
++{
++	u32 pins[RP1_NUM_GPIOS];
++	u32 funcs[RP1_NUM_GPIOS];
++	struct udevice *gpio_dev;
++	int pin_count, func_count;
++	int pull = -1;
++	int len, ret, i;
++
++	len = dev_read_size(config, "pins");
++	if (len <= 0 || len % sizeof(u32) || len > sizeof(pins))
++		return -EINVAL;
++	pin_count = len / sizeof(u32);
++	ret = dev_read_u32_array(config, "pins", pins, pin_count);
++	if (ret)
++		return ret;
++
++	len = dev_read_size(config, "function");
++	if (len <= 0 || len % sizeof(u32) || len > sizeof(funcs))
++		return -EINVAL;
++	func_count = len / sizeof(u32);
++	if (func_count != 1 && func_count != pin_count)
++		return -EINVAL;
++	ret = dev_read_u32_array(config, "function", funcs, func_count);
++	if (ret)
++		return ret;
++
++	if (dev_read_bool(config, "bias-pull-up"))
++		pull = RP1_PUD_UP;
++	else if (dev_read_bool(config, "bias-pull-down"))
++		pull = RP1_PUD_DOWN;
++	else if (dev_read_bool(config, "bias-disable"))
++		pull = RP1_PUD_OFF;
++
++	ret = device_find_first_child_by_uclass(dev, UCLASS_GPIO, &gpio_dev);
++	if (ret)
++		return ret;
++	ret = device_probe(gpio_dev);
++	if (ret)
++		return ret;
++
++	for (i = 0; i < pin_count; i++) {
++		u32 func = func_count == 1 ? funcs[0] : funcs[i];
++		struct rp1_pin_info *pin = rp1_get_pin(gpio_dev, pins[i]);
++
++		if (!pin || func >= RP1_FSEL_COUNT)
++			return -EINVAL;
++
++		rp1_set_fsel(pin, func);
++		if (pull >= 0)
++			rp1_pad_update(pin, RP1_PAD_PULL_MASK,
++				       pull << RP1_PAD_PULL_LSB);
++	}
++
++	return 0;
++}
++
++static int rp1_pinctrl_bind(struct udevice *dev)
++{
++	struct udevice *gpio_dev;
++
++	return device_bind(dev, DM_DRIVER_GET(rp1_gpio), "rp1-gpio", NULL,
++			   dev_ofnode(dev), &gpio_dev);
++}
++
++static const struct pinctrl_ops rp1_pinctrl_ops = {
++	.set_state = rp1_pinctrl_set_state,
++};
++
++static const struct udevice_id rp1_pinctrl_ids[] = {
 +	{ .compatible = "raspberrypi,rp1-gpio" },
 +	{ /* sentinel */ }
 +};
 +
-+U_BOOT_DRIVER(rp1_gpio) = {
-+	.name = "rp1-gpio",
-+	.id = UCLASS_GPIO,
-+	.of_match = rp1_gpio_ids,
-+	.ops = &rp1_gpio_ops,
-+	.priv_auto	= sizeof(struct rp1_gpio_priv),
-+	.probe = rp1_gpio_probe,
++U_BOOT_DRIVER(rp1_pinctrl) = {
++	.name = "rp1-pinctrl",
++	.id = UCLASS_PINCTRL,
++	.of_match = rp1_pinctrl_ids,
++	.bind = rp1_pinctrl_bind,
++	.ops = &rp1_pinctrl_ops,
 +};
 diff --git a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
 index ae53b02f27c..a9de45797fe 100644
@@ -5920,10 +6086,10 @@ index be37ed272e1..cf68e8c82c6 100644
  /* device request (setup) */
  struct devrequest {
 diff --git a/lib/efi_loader/Kconfig b/lib/efi_loader/Kconfig
-index 13e44be1d06..cfbd338c2aa 100644
+index 13e44be1d06..f559b87d76b 100644
 --- a/lib/efi_loader/Kconfig
 +++ b/lib/efi_loader/Kconfig
-@@ -123,6 +123,30 @@ config EFI_VARIABLE_FILE_STORE
+@@ -123,6 +123,43 @@ config EFI_VARIABLE_FILE_STORE
  	  Select this option if you want non-volatile UEFI variables to be
  	  stored as file /ubootefi.var on the EFI system partition.
  
@@ -5951,10 +6117,23 @@ index 13e44be1d06..cfbd338c2aa 100644
 +	  EFI_VAR_FILE_STORE_IFACE used to store ubootefi.var. Only used when
 +	  EFI_VAR_FILE_STORE_IFACE is non-empty.
 +
++config EFI_VARIABLE_I2C_STORE
++	bool "Store non-volatile UEFI variables in an I2C EEPROM"
++	depends on DM_I2C && I2C_EEPROM
++	help
++	  Select this option if you want non-volatile UEFI variables to be
++	  stored in an I2C EEPROM (or an EEPROM-compatible I2C slave, such
++	  as one emulated by a BMC). The serialized variable blob - the
++	  same format as the ubootefi.var file, including magic, length and
++	  CRC32 - is written at offset 0 of the first UCLASS_I2C_EEPROM
++	  device. Because the format is self-describing, the store can be
++	  read and modified out-of-band, e.g. by a BMC or by the OS through
++	  an EEPROM driver.
++
  config EFI_MM_COMM_TEE
  	bool "UEFI variables storage service via the trusted world"
  	depends on OPTEE
-@@ -572,6 +596,20 @@ config EFI_HTTP_BOOT
+@@ -572,6 +609,20 @@ config EFI_HTTP_BOOT
  	help
  	  Enabling this option adds EFI HTTP Boot support. It allows to
  	  directly boot from network.
@@ -5975,6 +6154,18 @@ index 13e44be1d06..cfbd338c2aa 100644
  endmenu
  
  config BOOTEFI_HELLO_COMPILE
+diff --git a/lib/efi_loader/Makefile b/lib/efi_loader/Makefile
+index f490081f654..b6b8e5e79c6 100644
+--- a/lib/efi_loader/Makefile
++++ b/lib/efi_loader/Makefile
+@@ -54,6 +54,7 @@ obj-y += efi_variable_tee.o
+ else
+ obj-y += efi_variable.o
+ obj-y += efi_var_file.o
++obj-$(CONFIG_EFI_VARIABLE_I2C_STORE) += efi_var_i2c.o
+ obj-$(CONFIG_EFI_VARIABLES_PRESEED) += efi_var_seed.o
+ endif
+ obj-y += efi_watchdog.o
 diff --git a/lib/efi_loader/efi_bootmgr.c b/lib/efi_loader/efi_bootmgr.c
 index a687f4d8e85..d7cbb560790 100644
 --- a/lib/efi_loader/efi_bootmgr.c
@@ -6278,6 +6469,20 @@ index c2b85dac236..815973247b7 100644
  	netobj->net.revision = EFI_SIMPLE_NETWORK_PROTOCOL_REVISION;
  	netobj->net.start = efi_net_start;
  	netobj->net.stop = efi_net_stop;
+diff --git a/lib/efi_loader/efi_runtime.c b/lib/efi_loader/efi_runtime.c
+index 35eb6a77766..0cea25b522d 100644
+--- a/lib/efi_loader/efi_runtime.c
++++ b/lib/efi_loader/efi_runtime.c
+@@ -131,7 +131,8 @@ efi_status_t efi_init_runtime_supported(void)
+ 				EFI_RT_SUPPORTED_SET_VIRTUAL_ADDRESS_MAP |
+ 				EFI_RT_SUPPORTED_CONVERT_POINTER;
+ 
+-	if (IS_ENABLED(CONFIG_EFI_VARIABLE_FILE_STORE))
++	if (IS_ENABLED(CONFIG_EFI_VARIABLE_FILE_STORE) ||
++	    IS_ENABLED(CONFIG_EFI_VARIABLE_I2C_STORE))
+ 		rt_table->runtime_services_supported |=
+ 			EFI_RT_SUPPORTED_QUERY_VARIABLE_INFO;
+ 
 diff --git a/lib/efi_loader/efi_setup.c b/lib/efi_loader/efi_setup.c
 index f06cf49e443..6f031b0ae8b 100644
 --- a/lib/efi_loader/efi_setup.c
@@ -6298,7 +6503,7 @@ index f06cf49e443..6f031b0ae8b 100644
  		ret = efi_acpi_register();
  		if (ret != EFI_SUCCESS)
 diff --git a/lib/efi_loader/efi_var_file.c b/lib/efi_loader/efi_var_file.c
-index f23a964a418..d8a1539a376 100644
+index f23a964a418..8eb2682ce70 100644
 --- a/lib/efi_loader/efi_var_file.c
 +++ b/lib/efi_loader/efi_var_file.c
 @@ -37,6 +37,22 @@ static efi_status_t __maybe_unused efi_set_blk_dev_to_system_partition(void)
@@ -6324,3 +6529,180 @@ index f23a964a418..d8a1539a376 100644
  	if (efi_system_partition.uclass_id == UCLASS_INVALID)
  		return EFI_DEVICE_ERROR;
  
+@@ -50,6 +66,7 @@ static efi_status_t __maybe_unused efi_set_blk_dev_to_system_partition(void)
+ 	return EFI_SUCCESS;
+ }
+ 
++#ifndef CONFIG_EFI_VARIABLE_I2C_STORE
+ /**
+  * efi_var_to_file() - save non-volatile variables as file
+  *
+@@ -95,6 +112,7 @@ out:
+ 	return EFI_SUCCESS;
+ #endif
+ }
++#endif /* !CONFIG_EFI_VARIABLE_I2C_STORE */
+ 
+ efi_status_t efi_var_restore(struct efi_var_file *buf, bool safe)
+ {
+@@ -139,6 +157,7 @@ efi_status_t efi_var_restore(struct efi_var_file *buf, bool safe)
+ 	return EFI_SUCCESS;
+ }
+ 
++#ifndef CONFIG_EFI_VARIABLE_I2C_STORE
+ /**
+  * efi_var_from_file() - read variables from file
+  *
+@@ -183,3 +202,4 @@ error:
+ #endif
+ 	return EFI_SUCCESS;
+ }
++#endif /* !CONFIG_EFI_VARIABLE_I2C_STORE */
+diff --git a/lib/efi_loader/efi_var_i2c.c b/lib/efi_loader/efi_var_i2c.c
+new file mode 100644
+index 00000000000..99a50461fb6
+--- /dev/null
++++ b/lib/efi_loader/efi_var_i2c.c
+@@ -0,0 +1,142 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * I2C EEPROM interface for UEFI variables
++ *
++ * Non-volatile UEFI variables are persisted as a single serialized blob
++ * (struct efi_var_file, the same format as the ubootefi.var file) at
++ * offset 0 of the first UCLASS_I2C_EEPROM device.  Because the format is
++ * self-describing (magic, length, CRC32), the same EEPROM can be read or
++ * rewritten out-of-band - e.g. by a BMC acting as the I2C slave, or by the
++ * OS through an at24-style driver - to inspect or modify BootOrder,
++ * BootNext and friends.
++ */
++
++#define LOG_CATEGORY LOGC_EFI
++
++#include <dm.h>
++#include <efi_loader.h>
++#include <efi_variable.h>
++#include <i2c_eeprom.h>
++#include <log.h>
++#include <malloc.h>
++
++static int efi_var_eeprom_get(struct udevice **devp)
++{
++	return uclass_first_device_err(UCLASS_I2C_EEPROM, devp);
++}
++
++/**
++ * efi_var_to_file() - save non-volatile variables to the EEPROM
++ *
++ * The variable blob is written at offset 0 of the variable store EEPROM.
++ * The write is skipped when the EEPROM already holds an identical blob so
++ * that repeated SetVariable calls do not wear the device.
++ *
++ * Return:	status code
++ */
++efi_status_t efi_var_to_file(void)
++{
++	struct efi_var_file *buf = NULL;
++	struct efi_var_file hdr;
++	struct udevice *dev;
++	efi_status_t ret;
++	static bool once;
++	loff_t len;
++	int size;
++
++	ret = efi_var_collect(&buf, &len, EFI_VARIABLE_NON_VOLATILE);
++	if (ret != EFI_SUCCESS)
++		goto error;
++
++	if (efi_var_eeprom_get(&dev)) {
++		if (!once) {
++			log_warning("Cannot persist EFI variables without EEPROM\n");
++			once = true;
++		}
++		ret = EFI_DEVICE_ERROR;
++		goto out;
++	}
++	once = false;
++
++	size = i2c_eeprom_size(dev);
++	if (size > 0 && len > size) {
++		log_err("EFI variables (%llu bytes) exceed EEPROM size (%d bytes)\n",
++			(unsigned long long)len, size);
++		ret = EFI_OUT_OF_RESOURCES;
++		goto error;
++	}
++
++	/*
++	 * Skip the write when the stored blob already matches; length and
++	 * CRC32 cover the complete variable contents.
++	 */
++	if (!i2c_eeprom_read(dev, 0, (u8 *)&hdr, sizeof(hdr)) &&
++	    hdr.magic == buf->magic && hdr.length == buf->length &&
++	    hdr.crc32 == buf->crc32)
++		goto out;
++
++	if (i2c_eeprom_write(dev, 0, (u8 *)buf, len))
++		ret = EFI_DEVICE_ERROR;
++
++error:
++	if (ret != EFI_SUCCESS)
++		log_err("Failed to persist EFI variables\n");
++out:
++	free(buf);
++	return ret;
++}
++
++/**
++ * efi_var_from_file() - read variables from the EEPROM
++ *
++ * The variable blob is read from offset 0 of the variable store EEPROM and
++ * the variables it contains are created.
++ *
++ * On first boot the EEPROM is blank.  This is why we must return
++ * EFI_SUCCESS in this case.
++ *
++ * If the blob is corrupted, e.g. incorrect CRC32, we do not want to stop
++ * the boot process.  We deliberately return EFI_SUCCESS in this case, too.
++ *
++ * Return:	status code
++ */
++efi_status_t efi_var_from_file(void)
++{
++	struct efi_var_file *buf;
++	struct udevice *dev;
++
++	buf = calloc(1, EFI_VAR_BUF_SIZE);
++	if (!buf) {
++		log_err("Out of memory\n");
++		return EFI_OUT_OF_RESOURCES;
++	}
++
++	if (efi_var_eeprom_get(&dev)) {
++		log_info("No EFI variable EEPROM, no variables loaded\n");
++		goto out;
++	}
++
++	if (i2c_eeprom_read(dev, 0, (u8 *)buf, sizeof(*buf))) {
++		log_info("No EFI variables loaded\n");
++		goto out;
++	}
++
++	if (buf->magic != EFI_VAR_FILE_MAGIC ||
++	    buf->length < sizeof(*buf) || buf->length > EFI_VAR_BUF_SIZE) {
++		log_info("No EFI variables found in EEPROM\n");
++		goto out;
++	}
++
++	if (buf->length > sizeof(*buf) &&
++	    i2c_eeprom_read(dev, sizeof(*buf), (u8 *)buf + sizeof(*buf),
++			    buf->length - sizeof(*buf))) {
++		log_err("Reading EFI variables from EEPROM failed\n");
++		goto out;
++	}
++
++	if (efi_var_restore(buf, false) != EFI_SUCCESS)
++		log_err("Invalid EFI variables in EEPROM\n");
++out:
++	free(buf);
++	return EFI_SUCCESS;
++}
